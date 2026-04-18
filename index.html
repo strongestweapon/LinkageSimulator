@@ -45,7 +45,7 @@
   }
   body {
     display: grid;
-    grid-template-columns: 1fr 240px;
+    grid-template-columns: 1fr 320px;
     gap: 10px;
     padding: 10px;
   }
@@ -196,13 +196,12 @@
     padding: 2px 5px;
   }
   .rest-label {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--fg3);
     font-family: var(--mono);
-    min-width: 14px;
     text-align: center;
+    padding: 0 2px;
   }
-  .rest-sep { width: 1px; height: 14px; background: var(--border); margin: 0 3px; }
 </style>
 </head>
 <body>
@@ -214,23 +213,14 @@
         <button class="btn" id="gridBtn">grid</button>
         <button class="btn" id="labelsBtn">labels</button>
         <button class="btn" id="snapBtn">snap: 20</button>
+        <button class="btn" id="fitBtn" title="Fit view to content">fit</button>
         <span class="rest-group">
-          <span class="rest-label">R1</span>
-          <button class="btn" id="saveR0Btn">save</button><button class="btn" id="goR0Btn" disabled style="opacity:0.4">go</button>
-          <span class="rest-sep"></span>
-          <span class="rest-label">R2</span>
-          <button class="btn" id="saveR1Btn">save</button><button class="btn" id="goR1Btn" disabled style="opacity:0.4">go</button>
-          <span class="rest-sep"></span>
-          <span class="rest-label">R3</span>
-          <button class="btn" id="saveR2Btn">save</button><button class="btn" id="goR2Btn" disabled style="opacity:0.4">go</button>
+          <span class="rest-label">rest position</span>
+          <button class="btn" id="captureBtn">capture</button><button class="btn" id="resetBtn" disabled style="opacity:0.4">reset</button>
         </span>
         <span class="size-control">
-          pt<input type="range" id="ptSizeSlider" min="10" max="48" value="24" step="1"/>
-          <span id="ptSizeVal" style="min-width:22px; text-align:right; font-family:var(--mono)">24</span>
-        </span>
-        <span class="size-control">
-          link<input type="range" id="linkSizeSlider" min="12" max="56" value="30" step="1"/>
-          <span id="linkSizeVal" style="min-width:22px; text-align:right; font-family:var(--mono)">30</span>
+          label<input type="range" id="labelSizeSlider" min="10" max="48" value="24" step="1"/>
+          <span id="labelSizeVal" style="min-width:22px; text-align:right; font-family:var(--mono)">24</span>
         </span>
         <span class="coords" id="coordDisplay">-</span>
       </div>
@@ -238,13 +228,14 @@
     </div>
     <div class="status" id="status">click to start the first link.</div>
     <div class="hint">
-      click = add point &nbsp;·&nbsp; near point = joint &nbsp;·&nbsp; right click = finish / set ground·input·delete &nbsp;·&nbsp; drag input = simulate &nbsp;·&nbsp; save/go rest to pin positions
+      click = add point &nbsp;·&nbsp; near point = joint &nbsp;·&nbsp; right click = finish / set role / set origin / delete &nbsp;·&nbsp; drag input = simulate &nbsp;·&nbsp; wheel = zoom &nbsp;·&nbsp; middle-drag or space+drag = pan
     </div>
   </div>
 
   <div class="side">
     <div class="bar">
       <button class="btn primary" id="applyBtn">apply</button>
+      <button class="btn" id="quantizeBtn" title="Round all coords to integers">quantize</button>
       <button class="btn" id="copyBtn">copy</button>
       <button class="btn" id="saveBtn">save</button>
       <button class="btn" id="loadBtn">load</button>
@@ -272,29 +263,78 @@
     showGrid: true,
     snap: true,
     snapSize: 20,
-    pointLabelSize: 24,
-    linkLabelSize: 30,
+    labelSize: 24,
     hoverInfo: null,
     drag: null,
     roles: {},
-    restConfigs: [null, null, null],
-    activeRestSlot: -1,
+    origin: null,
     restConfig: null,
-    showLabels: true
+    showLabels: true,
+    view: { x: 0, y: 0, w: VB_W, h: VB_H }
   };
+
+  let spaceDown = false;
+  function roundCoord(v) { return Math.round(v * 10) / 10; }
+
+  const STORAGE_KEY = 'fingerSimulator.v1';
+  let persistTimer = null;
+
+  function persist() {
+    try {
+      const data = {
+        links: state.links,
+        joints: state.joints,
+        roles: state.roles,
+        origin: state.origin,
+        restConfig: state.restConfig,
+        nextLinkId: state.nextLinkId,
+        view: state.view,
+        labelSize: state.labelSize,
+        showGrid: state.showGrid,
+        showLabels: state.showLabels,
+        snap: state.snap,
+        snapSize: state.snapSize
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    } catch (_) { /* quota / privacy mode — silently ignore */ }
+  }
+
+  function schedulePersist() {
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = setTimeout(persist, 200);
+  }
+
+  function loadPersisted() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return false;
+      const d = JSON.parse(raw);
+      if (Array.isArray(d.links)) state.links = d.links;
+      if (Array.isArray(d.joints)) state.joints = d.joints;
+      if (d.roles && typeof d.roles === 'object') state.roles = d.roles;
+      if (d.origin !== undefined) state.origin = d.origin;
+      if (d.restConfig && d.restConfig.positions) state.restConfig = d.restConfig;
+      if (typeof d.nextLinkId === 'number') state.nextLinkId = d.nextLinkId;
+      if (d.view && typeof d.view.w === 'number') state.view = d.view;
+      if (typeof d.labelSize === 'number') state.labelSize = d.labelSize;
+      if (typeof d.showGrid === 'boolean') state.showGrid = d.showGrid;
+      if (typeof d.showLabels === 'boolean') state.showLabels = d.showLabels;
+      if (typeof d.snap === 'boolean') state.snap = d.snap;
+      if (typeof d.snapSize === 'number') state.snapSize = d.snapSize;
+      return true;
+    } catch (_) { return false; }
+  }
 
   let dragEndTime = 0;
   const history = [];
   const HISTORY_MAX = 100;
 
   function updateRestButtons() {
-    for (let i = 0; i < 3; i++) {
-      const goBtn = document.getElementById('goR' + i + 'Btn');
-      const saveBtn = document.getElementById('saveR' + i + 'Btn');
-      const hasData = !!state.restConfigs[i];
-      if (goBtn) { goBtn.disabled = !hasData; goBtn.style.opacity = hasData ? '1' : '0.4'; }
-      if (saveBtn) saveBtn.classList.toggle('primary', state.activeRestSlot === i);
-    }
+    const resetBtn = document.getElementById('resetBtn');
+    const captureBtn = document.getElementById('captureBtn');
+    const has = !!state.restConfig;
+    if (resetBtn) { resetBtn.disabled = !has; resetBtn.style.opacity = has ? '1' : '0.4'; }
+    if (captureBtn) captureBtn.classList.toggle('primary', has);
   }
 
   function snapshot() {
@@ -310,8 +350,8 @@
       links: state.links.map(cloneLink),
       joints: state.joints.map(j => ({ a: j.a, b: j.b })),
       roles: { ...state.roles },
-      restConfigs: state.restConfigs.map(cloneRC),
-      activeRestSlot: state.activeRestSlot,
+      origin: state.origin,
+      restConfig: cloneRC(state.restConfig),
       currentLink: state.currentLink ? cloneLink(state.currentLink) : null,
       nextLinkId: state.nextLinkId
     };
@@ -326,9 +366,8 @@
     state.links = s.links;
     state.joints = s.joints;
     state.roles = s.roles;
-    state.restConfigs = s.restConfigs || [null, null, null];
-    state.activeRestSlot = s.activeRestSlot !== undefined ? s.activeRestSlot : -1;
-    state.restConfig = state.activeRestSlot >= 0 ? state.restConfigs[state.activeRestSlot] : null;
+    state.origin = s.origin || null;
+    state.restConfig = s.restConfig || null;
     state.currentLink = s.currentLink;
     state.nextLinkId = s.nextLinkId;
     kinSolverReady = false;
@@ -371,12 +410,13 @@
 
   function svgCoords(evt, noSnap) {
     const rect = svg.getBoundingClientRect();
-    const scale = Math.min(rect.width / VB_W, rect.height / VB_H);
-    const renderedW = VB_W * scale, renderedH = VB_H * scale;
+    const v = state.view;
+    const scale = Math.min(rect.width / v.w, rect.height / v.h);
+    const renderedW = v.w * scale, renderedH = v.h * scale;
     const offsetX = (rect.width - renderedW) / 2;
     const offsetY = (rect.height - renderedH) / 2;
-    const x = (evt.clientX - rect.left - offsetX) / scale;
-    const y = (evt.clientY - rect.top - offsetY) / scale;
+    const x = v.x + (evt.clientX - rect.left - offsetX) / scale;
+    const y = v.y + (evt.clientY - rect.top - offsetY) / scale;
     if (state.snap && !noSnap) {
       return {
         x: Math.round(x / state.snapSize) * state.snapSize,
@@ -478,44 +518,66 @@
 
   function render() {
     svg.innerHTML = '';
-    const pointLabelSize = state.pointLabelSize;
-    const linkLabelSize = state.linkLabelSize;
+    const v = state.view;
+    svg.setAttribute('viewBox', v.x + ' ' + v.y + ' ' + v.w + ' ' + v.h);
+    const pointLabelSize = state.labelSize;
+    const linkLabelSize = state.labelSize;
     const occupied = [];
 
-    // grid
+    // screen-to-viewbox scale (for items that should stay constant pixel size across zoom)
+    const rect = svg.getBoundingClientRect();
+    const viewScale = Math.min(rect.width / v.w, rect.height / v.h) || 1;
+    const px = (n) => n / viewScale;
+
+    // origin reference for grid labels / text display
+    const originPos = state.origin ? getPoint(state.origin) : null;
+
+    // grid — spans currently visible viewBox, negative coords allowed
     if (state.showGrid) {
-      for (let x = 0; x <= VB_W; x += 20) {
+      const minorStep = 20, majorStep = 100;
+      const x0 = Math.floor(v.x / minorStep) * minorStep;
+      const x1 = Math.ceil((v.x + v.w) / minorStep) * minorStep;
+      const y0 = Math.floor(v.y / minorStep) * minorStep;
+      const y1 = Math.ceil((v.y + v.h) / minorStep) * minorStep;
+      const tooManyMinor = (x1 - x0) / minorStep > 400 || (y1 - y0) / minorStep > 400;
+      const step = tooManyMinor ? majorStep : minorStep;
+      for (let x = x0; x <= x1; x += step) {
+        const isMajor = x % majorStep === 0;
         const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        line.setAttribute('x1', x); line.setAttribute('y1', 0);
-        line.setAttribute('x2', x); line.setAttribute('y2', VB_H);
+        line.setAttribute('x1', x); line.setAttribute('y1', y0);
+        line.setAttribute('x2', x); line.setAttribute('y2', y1);
         line.setAttribute('stroke', 'var(--border)');
-        line.setAttribute('stroke-width', x % 100 === 0 ? '0.6' : '0.3');
-        line.setAttribute('opacity', x % 100 === 0 ? '0.6' : '0.35');
+        line.setAttribute('stroke-width', isMajor ? '0.6' : '0.3');
+        line.setAttribute('opacity', isMajor ? '0.6' : '0.35');
         svg.appendChild(line);
       }
-      for (let y = 0; y <= VB_H; y += 20) {
+      for (let y = y0; y <= y1; y += step) {
+        const isMajor = y % majorStep === 0;
         const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        line.setAttribute('x1', 0); line.setAttribute('y1', y);
-        line.setAttribute('x2', VB_W); line.setAttribute('y2', y);
+        line.setAttribute('x1', x0); line.setAttribute('y1', y);
+        line.setAttribute('x2', x1); line.setAttribute('y2', y);
         line.setAttribute('stroke', 'var(--border)');
-        line.setAttribute('stroke-width', y % 100 === 0 ? '0.6' : '0.3');
-        line.setAttribute('opacity', y % 100 === 0 ? '0.6' : '0.35');
+        line.setAttribute('stroke-width', isMajor ? '0.6' : '0.3');
+        line.setAttribute('opacity', isMajor ? '0.6' : '0.35');
         svg.appendChild(line);
       }
-      for (let x = 100; x < VB_W; x += 100) {
+      // axis number labels — displayed relative to origin if set
+      const labelFontSize = px(11);
+      const labelPad = labelFontSize * 0.3;
+      for (let x = Math.ceil(v.x / majorStep) * majorStep; x < v.x + v.w; x += majorStep) {
         const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        t.setAttribute('x', x + 3); t.setAttribute('y', 14);
-        t.setAttribute('font-size', '10'); t.setAttribute('fill', 'var(--fg3)');
+        t.setAttribute('x', x + labelPad); t.setAttribute('y', v.y + labelFontSize + labelPad);
+        t.setAttribute('font-size', labelFontSize); t.setAttribute('fill', 'var(--fg3)');
         t.setAttribute('font-family', 'var(--mono)');
-        t.textContent = x;
+        t.textContent = originPos ? roundCoord(x - originPos.x) : x;
         svg.appendChild(t);
       }
-      for (let y = 100; y < VB_H; y += 100) {
+      for (let y = Math.ceil(v.y / majorStep) * majorStep; y < v.y + v.h; y += majorStep) {
         const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        t.setAttribute('x', 3); t.setAttribute('y', y - 3);
-        t.setAttribute('font-size', '10'); t.setAttribute('fill', 'var(--fg3)');
+        t.setAttribute('x', v.x + labelPad); t.setAttribute('y', y - labelPad);
+        t.setAttribute('font-size', labelFontSize); t.setAttribute('fill', 'var(--fg3)');
         t.setAttribute('font-family', 'var(--mono)');
-        t.textContent = y;
+        t.textContent = originPos ? roundCoord(y - originPos.y) : y;
         svg.appendChild(t);
       }
     }
@@ -555,6 +617,35 @@
         line.setAttribute('opacity', '0.4');
         line.setAttribute('stroke-dasharray', '3 3');
         svg.appendChild(line);
+      }
+    }
+
+    // origin cross marker (constant screen size)
+    if (state.origin) {
+      const op = getPoint(state.origin);
+      if (op) {
+        const sz = px(20);
+        const sw = px(1.2);
+        const mk = (x1, y1, x2, y2) => {
+          const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+          line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+          line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+          line.setAttribute('stroke', 'var(--fg)');
+          line.setAttribute('stroke-width', sw);
+          line.setAttribute('opacity', '0.55');
+          svg.appendChild(line);
+        };
+        mk(op.x - sz, op.y, op.x + sz, op.y);
+        mk(op.x, op.y - sz, op.x, op.y + sz);
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        t.setAttribute('x', op.x + sz + px(4));
+        t.setAttribute('y', op.y - px(6));
+        t.setAttribute('font-size', px(12));
+        t.setAttribute('fill', 'var(--fg2)');
+        t.setAttribute('font-family', 'var(--mono)');
+        t.setAttribute('opacity', '0.7');
+        t.textContent = 'origin';
+        svg.appendChild(t);
       }
     }
 
@@ -601,8 +692,7 @@
       bg.setAttribute('width', w + 10);
       bg.setAttribute('height', h + 4);
       bg.setAttribute('rx', 4);
-      bg.setAttribute('fill', 'var(--bg)');
-      bg.setAttribute('opacity', '0.9');
+      bg.setAttribute('fill', 'none');
       svg.appendChild(bg);
 
       const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -628,7 +718,7 @@
           // ground: filled circle + triangle base
           const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
           c.setAttribute('cx', p.x); c.setAttribute('cy', p.y);
-          c.setAttribute('r', 9);
+          c.setAttribute('r', 8);
           c.setAttribute('fill', link.color);
           c.setAttribute('stroke', 'var(--fg)');
           c.setAttribute('stroke-width', '1.5');
@@ -653,7 +743,7 @@
           // input: blue filled circle + arrow
           const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
           c.setAttribute('cx', p.x); c.setAttribute('cy', p.y);
-          c.setAttribute('r', 9);
+          c.setAttribute('r', 8);
           c.setAttribute('fill', 'var(--info-border)');
           c.setAttribute('stroke', 'var(--fg)');
           c.setAttribute('stroke-width', '1.5');
@@ -671,7 +761,7 @@
           // friction: dashed circle
           const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
           c.setAttribute('cx', p.x); c.setAttribute('cy', p.y);
-          c.setAttribute('r', 9);
+          c.setAttribute('r', 8);
           c.setAttribute('fill', 'var(--bg)');
           c.setAttribute('stroke', link.color);
           c.setAttribute('stroke-width', '2');
@@ -686,10 +776,10 @@
         } else {
           const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
           c.setAttribute('cx', p.x); c.setAttribute('cy', p.y);
-          c.setAttribute('r', 7);
+          c.setAttribute('r', 8);
           c.setAttribute('fill', 'var(--bg)');
           c.setAttribute('stroke', link.color);
-          c.setAttribute('stroke-width', '2.5');
+          c.setAttribute('stroke-width', '2');
           svg.appendChild(c);
         }
 
@@ -704,15 +794,14 @@
           bg.setAttribute('width', lw + 8);
           bg.setAttribute('height', lh + 3);
           bg.setAttribute('rx', 3);
-          bg.setAttribute('fill', 'var(--bg)');
-          bg.setAttribute('opacity', '0.88');
+          bg.setAttribute('fill', 'none');
           svg.appendChild(bg);
 
           const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
           t.setAttribute('x', lpos.x);
           t.setAttribute('y', lpos.y - 3);
           t.setAttribute('font-size', pointLabelSize);
-          t.setAttribute('fill', 'var(--fg)');
+          t.setAttribute('fill', 'var(--fg2)');
           t.setAttribute('font-family', 'var(--mono)');
           t.setAttribute('font-weight', '600');
           t.textContent = ref;
@@ -722,6 +811,28 @@
     };
     state.links.forEach(drawPoints);
     if (state.currentLink) drawPoints(state.currentLink);
+
+    // drift violation highlight
+    if (state.drag && state.drag.hitLimit && state.drag.driftPos) {
+      const dp = state.drag.driftPos;
+      const ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      ring.setAttribute('cx', dp.x); ring.setAttribute('cy', dp.y);
+      ring.setAttribute('r', 18);
+      ring.setAttribute('fill', 'none');
+      ring.setAttribute('stroke', '#e04040');
+      ring.setAttribute('stroke-width', '2.5');
+      ring.setAttribute('opacity', '0.9');
+      svg.appendChild(ring);
+      const ring2 = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      ring2.setAttribute('cx', dp.x); ring2.setAttribute('cy', dp.y);
+      ring2.setAttribute('r', 24);
+      ring2.setAttribute('fill', 'none');
+      ring2.setAttribute('stroke', '#e04040');
+      ring2.setAttribute('stroke-width', '1');
+      ring2.setAttribute('stroke-dasharray', '4 3');
+      ring2.setAttribute('opacity', '0.5');
+      svg.appendChild(ring2);
+    }
 
     // drag-to-joint preview
     if (state.drag && state.drag.snapTarget && state.drag.moved) {
@@ -779,17 +890,24 @@
         svg.appendChild(c);
       }
     }
+
+    schedulePersist();
   }
 
   // ── serialize / parse ──
 
   function serialize() {
     const lines = [];
+    const originPos = state.origin ? getPoint(state.origin) : null;
+    const ox = originPos ? originPos.x : 0;
+    const oy = originPos ? originPos.y : 0;
     state.links.forEach(link => {
       lines.push('link ' + link.name + ' [' + link.color + ']:');
       link.order.forEach(local => {
         const p = link.points[local];
-        lines.push('  ' + local + ': (' + p.x + ', ' + p.y + ')');
+        const px = roundCoord(p.x - ox);
+        const py = roundCoord(p.y - oy);
+        lines.push('  ' + local + ': (' + px + ', ' + py + ')');
       });
       lines.push('');
     });
@@ -798,6 +916,11 @@
       state.joints.forEach(j => {
         lines.push('joint: ' + j.a + ' = ' + j.b);
       });
+    }
+    if (state.origin && originPos) {
+      lines.push('');
+      lines.push('# origin');
+      lines.push('origin: ' + state.origin + ' at (' + roundCoord(ox) + ', ' + roundCoord(oy) + ')');
     }
     const roleEntries = Object.entries(state.roles);
     if (roleEntries.length > 0) {
@@ -817,9 +940,18 @@
     const newRoles = {};
     const errors = [];
     let currentLink = null;
+    let newOrigin = null;
+    let originOffset = { x: 0, y: 0 };
     src.split('\n').forEach((raw, idx) => {
       const line = raw.trim();
       if (!line || line.startsWith('#')) return;
+
+      const om = line.match(/^origin\s*:\s*(\S+)\s+at\s*\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)\s*$/);
+      if (om) {
+        newOrigin = om[1];
+        originOffset = { x: parseFloat(om[2]), y: parseFloat(om[3]) };
+        return;
+      }
 
       const lm = line.match(/^link\s+(\S+)\s*(?:\[([^\]]+)\])?\s*:\s*$/);
       if (lm) {
@@ -858,7 +990,16 @@
 
       errors.push('line ' + (idx + 1) + ': "' + line + '"');
     });
-    return { links: newLinks, joints: newJoints, roles: newRoles, errors };
+    // shift parsed point coords by origin offset (origin-relative → world)
+    if (newOrigin) {
+      newLinks.forEach(l => {
+        for (const local in l.points) {
+          l.points[local].x += originOffset.x;
+          l.points[local].y += originOffset.y;
+        }
+      });
+    }
+    return { links: newLinks, joints: newJoints, roles: newRoles, origin: newOrigin, errors };
   }
 
   function applyText() {
@@ -871,6 +1012,7 @@
     state.links = r.links;
     state.joints = r.joints;
     state.roles = r.roles || {};
+    state.origin = r.origin || null;
     state.currentLink = null;
     let maxL = -1;
     state.links.forEach(l => { const m = l.name.match(/^L(\d+)$/); if (m) maxL = Math.max(maxL, +m[1]); });
@@ -886,8 +1028,7 @@
   const kinSolver = new LinkageSolver();
   let kinSolverReady = false;
 
-  function saveRestConfig(slot) {
-    if (slot === undefined) slot = state.activeRestSlot >= 0 ? state.activeRestSlot : 0;
+  function saveRestConfig() {
     // Snap joint-group members to a canonical (sorted-first rep) position before
     // saving, so solver bodies are initialized consistently without drift baked in.
     const canonPos = {};
@@ -912,9 +1053,7 @@
         positions[ref] = canonPos[ref] || { x: link.points[local].x, y: link.points[local].y };
       });
     });
-    state.restConfigs[slot] = { positions };
-    state.activeRestSlot = slot;
-    state.restConfig = state.restConfigs[slot];
+    state.restConfig = { positions };
     kinSolverReady = false;
     updateRestButtons();
   }
@@ -933,9 +1072,10 @@
       if (pts.length >= 2) kinSolver.addBody(link.name, pts);
     });
 
-    // add joint constraints (topology — never changes)
-    // weight must match ground/input pins so all constraints are equally important
-    const JOINT_W = 100;
+    // Joints are hard constraints — weight must be much higher than input so the solver
+    // never sacrifices joint closure to chase the cursor. At kinematic limits the
+    // mechanism stops gracefully rather than opening joints and triggering rollback.
+    const JOINT_W = 1000;
     state.joints.forEach(j => {
       const a = parseRef(j.a), b = parseRef(j.b);
       if (kinSolver.bodies[a.link] && kinSolver.bodies[b.link]) {
@@ -954,52 +1094,47 @@
     kinSolver.clearPins();
     kinSolver.fixed = {};
 
-    const rp = state.restConfig.positions;
-    const GROUND_W = 100;
+    const GROUND_W = 1000;
     const INPUT_W  = 100;
 
-    // for each body, count effective ground anchors via joint-group propagation
+    const draggedRef = (state.drag && state.drag.kinematic && state.drag.mode === 'point')
+      ? refOf(state.links[state.drag.linkIdx].name, state.drag.localName)
+      : null;
+
+    // Ground anchors: pin to CURRENT positions (not rest config).
+    // When >= 2 ground pts on same body, body is fully determined → compute pose via 2-point IK.
     const groundPerBody = {};
     for (const ref in state.roles) {
-      if (state.roles[ref] !== 'ground' || !rp[ref]) continue;
-      const group = jointGroup(ref);
-      group.forEach(gr => {
-        const r = parseRef(gr);
-        if (!kinSolver.bodies[r.link]) return;
-        if (!groundPerBody[r.link]) groundPerBody[r.link] = [];
-        if (!groundPerBody[r.link].some(g => g.local === r.point)) {
-          groundPerBody[r.link].push({ local: r.point, pos: rp[ref] });
-        }
-      });
+      if (state.roles[ref] !== 'ground') continue;
+      const cp = getPoint(ref);
+      if (!cp) continue;
+      const r = parseRef(ref);
+      if (!kinSolver.bodies[r.link]) continue;
+      if (!groundPerBody[r.link]) groundPerBody[r.link] = [];
+      groundPerBody[r.link].push({ local: r.point, pos: { x: cp.x, y: cp.y } });
     }
 
     for (const bodyName in groundPerBody) {
       const gpts = groundPerBody[bodyName];
       if (gpts.length >= 2) {
-        // fully fixed — body stays at its rest pose (already set in initKinSolver)
+        // 2+ direct ground roles → compute body pose from 2 world points (closed-form IK)
         const b = kinSolver.bodies[bodyName];
-        b.angle = 0;
-        // centroid of rest positions of body's points
-        const link = state.links.find(l => l.name === bodyName);
-        if (link) {
-          let cx = 0, cy = 0, cnt = 0;
-          link.order.forEach(local => {
-            const ref = refOf(bodyName, local);
-            if (rp[ref]) { cx += rp[ref].x; cy += rp[ref].y; cnt++; }
-          });
-          if (cnt) { b.x = cx / cnt; b.y = cy / cnt; }
-        }
+        const p1 = gpts[0].pos, p2 = gpts[1].pos;
+        const lp1 = b.locals[gpts[0].local], lp2 = b.locals[gpts[1].local];
+        const worldAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+        const localAngle = Math.atan2(lp2.ly - lp1.ly, lp2.lx - lp1.lx);
+        b.angle = worldAngle - localAngle;
+        const c = Math.cos(b.angle), s = Math.sin(b.angle);
+        b.x = p1.x - (lp1.lx * c - lp1.ly * s);
+        b.y = p1.y - (lp1.lx * s + lp1.ly * c);
         kinSolver.setFixed(bodyName);
       } else {
-        // 1 ground anchor — high-weight pin
+        // 1 direct ground role → soft pin at current position
         kinSolver.addPin(bodyName, gpts[0].local, gpts[0].pos, GROUND_W);
       }
     }
 
     // input pins: only pin the currently-dragged input; others float freely
-    const draggedRef = (state.drag && state.drag.kinematic && state.drag.mode === 'point')
-      ? refOf(state.links[state.drag.linkIdx].name, state.drag.localName)
-      : null;
     for (const ref in state.roles) {
       if (state.roles[ref] !== 'input') continue;
       if (draggedRef && ref !== draggedRef) continue;
@@ -1094,7 +1229,10 @@
   function onDragMove(e) {
     if (!state.drag) return;
     const pos = svgCoords(e);
-    coordDisplay.textContent = Math.round(pos.x) + ', ' + Math.round(pos.y);
+    const oPos = state.origin ? getPoint(state.origin) : null;
+    const cdx = oPos ? (pos.x - oPos.x) : pos.x;
+    const cdy = oPos ? (pos.y - oPos.y) : pos.y;
+    coordDisplay.textContent = Math.round(cdx) + ', ' + Math.round(cdy);
 
     if (!state.drag.moved) {
       const sdx = e.clientX - state.drag.screenX;
@@ -1160,26 +1298,56 @@
           frameBodies[bname] = { x: b.x, y: b.y, angle: b.angle };
         }
 
+        // Skip branch flip check on first frame after solver re-init (kinSolverReady
+        // was false), because re-init resets all angles to 0 — the jump from 0 to
+        // solved pose is not a real branch flip.
+        const skipFlipCheck = !kinSolverReady;
+
+        const FLIP_THRESHOLD = Math.PI / 3; // 60° per substep = branch flip
         for (let s = 1; s <= nSteps; s++) {
           const t = s / nSteps;
           link.points[state.drag.localName] = {
             x: startX + sdx * t,
             y: startY + sdy * t
           };
+          // record angles before solve to detect branch flip
+          const preAngles = {};
+          for (const bname in kinSolver.bodies) {
+            if (!kinSolver.fixed[bname]) preAngles[bname] = kinSolver.bodies[bname].angle;
+          }
           solveKinematics();
 
-          // measure physical validity: ground drift + joint separation
-          let maxDrift = 0;
-          const rps = state.restConfig.positions;
+          // measure physical validity: ground drift (from frame start) + joint separation
+          let maxDrift = 0, driftCause = '', driftPos = null;
           for (const ref in state.roles) {
             if (state.roles[ref] !== 'ground') continue;
-            const rp = rps[ref]; const cp = getPoint(ref);
-            if (rp && cp) maxDrift = Math.max(maxDrift, Math.hypot(cp.x - rp.x, cp.y - rp.y));
+            const fp = framePos[ref]; const cp = getPoint(ref);
+            if (fp && cp) {
+              const d = Math.hypot(cp.x - fp.x, cp.y - fp.y);
+              if (d > maxDrift) { maxDrift = d; driftCause = 'ground ' + ref + ' drift ' + d.toFixed(1) + 'px'; driftPos = cp; }
+            }
           }
           state.joints.forEach(j => {
             const pa = getPoint(j.a), pb = getPoint(j.b);
-            if (pa && pb) maxDrift = Math.max(maxDrift, Math.hypot(pa.x - pb.x, pa.y - pb.y));
+            if (pa && pb) {
+              const d = Math.hypot(pa.x - pb.x, pa.y - pb.y);
+              if (d > maxDrift) { maxDrift = d; driftCause = 'joint ' + j.a + '=' + j.b + ' sep ' + d.toFixed(1) + 'px'; driftPos = { x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2 }; }
+            }
           });
+
+          // detect branch flip: any free body rotated > FLIP_THRESHOLD in one substep
+          if (maxDrift <= MAX_DRIFT && !skipFlipCheck) {
+            for (const bname in preAngles) {
+              let da = Math.abs(kinSolver.bodies[bname].angle - preAngles[bname]);
+              if (da > Math.PI) da = 2 * Math.PI - da;
+              if (da > FLIP_THRESHOLD) {
+                maxDrift = MAX_DRIFT + 1;
+                driftCause = 'branch flip: ' + bname + ' rotated ' + (da * 180 / Math.PI).toFixed(0) + '°';
+                driftPos = getPoint(refOf(bname, Object.keys(kinSolver.bodies[bname].locals)[0]));
+                break;
+              }
+            }
+          }
 
           if (maxDrift > MAX_DRIFT) {
             // restore to FRAME START — no partial movement visible
@@ -1195,6 +1363,8 @@
               if (b) { b.x = bs.x; b.y = bs.y; b.angle = bs.angle; }
             }
             hitLimit = true;
+            state.drag.driftCause = driftCause;
+            state.drag.driftPos = driftPos;
             break;
           }
         }
@@ -1255,7 +1425,7 @@
         ? link.name + '.' + state.drag.localName : link.name;
       if (state.drag.kinematic) {
         if (state.drag.hitLimit) {
-          status.textContent = 'sim | ⚠ out of range — stopped';
+          status.textContent = 'sim | ⚠ stopped: ' + (state.drag.driftCause || 'out of range');
           status.classList.add('err');
         } else {
           status.textContent = 'sim | residual: ' + (kinSolver.lastResidual || 0).toFixed(4);
@@ -1325,7 +1495,55 @@
 
   // ── events ──
 
+  function startPan(e) {
+    const rect = svg.getBoundingClientRect();
+    const v = state.view;
+    const scale = Math.min(rect.width / v.w, rect.height / v.h);
+    const startX = e.clientX, startY = e.clientY;
+    const startVX = v.x, startVY = v.y;
+    svg.style.cursor = 'grabbing';
+    document.body.style.cursor = 'grabbing';
+    const onMove = (ev) => {
+      const dx = ev.clientX - startX, dy = ev.clientY - startY;
+      v.x = startVX - dx / scale;
+      v.y = startVY - dy / scale;
+      render();
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      svg.style.cursor = spaceDown ? 'grab' : 'crosshair';
+      document.body.style.cursor = '';
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  svg.addEventListener('wheel', e => {
+    e.preventDefault();
+    const rect = svg.getBoundingClientRect();
+    const v = state.view;
+    const scale = Math.min(rect.width / v.w, rect.height / v.h);
+    const renderedW = v.w * scale, renderedH = v.h * scale;
+    const offsetX = (rect.width - renderedW) / 2;
+    const offsetY = (rect.height - renderedH) / 2;
+    const mx = v.x + (e.clientX - rect.left - offsetX) / scale;
+    const my = v.y + (e.clientY - rect.top - offsetY) / scale;
+    const k = Math.exp(e.deltaY * 0.0015);
+    const newW = v.w * k, newH = v.h * k;
+    if (newW < 40 || newW > 40000) return;
+    v.x = mx - (mx - v.x) * k;
+    v.y = my - (my - v.y) * k;
+    v.w = newW; v.h = newH;
+    render();
+  }, { passive: false });
+
   svg.addEventListener('mousedown', e => {
+    if (e.button === 1 || (e.button === 0 && spaceDown)) {
+      e.preventDefault();
+      startPan(e);
+      return;
+    }
     if (e.button !== 0) return;
     if (state.currentLink) return;
     const pos = svgCoords(e);
@@ -1421,10 +1639,14 @@
 
   svg.addEventListener('mousemove', e => {
     const pos = svgCoords(e);
-    coordDisplay.textContent = Math.round(pos.x) + ', ' + Math.round(pos.y);
+    const originPos = state.origin ? getPoint(state.origin) : null;
+    const dx = originPos ? (pos.x - originPos.x) : pos.x;
+    const dy = originPos ? (pos.y - originPos.y) : pos.y;
+    coordDisplay.textContent = Math.round(dx) + ', ' + Math.round(dy);
 
     // drag is handled by document-level listener
     if (state.drag) return;
+    if (spaceDown) { svg.style.cursor = 'grab'; return; }
 
     // hover logic
     const near = findNearPoint(pos);
@@ -1565,12 +1787,9 @@
             pushHistory();
             setNodeRole(nodeMembers, null);
             if (Object.keys(state.roles).length === 0) {
-              state.restConfigs = [null, null, null];
-              state.activeRestSlot = -1;
               state.restConfig = null;
               updateRestButtons();
             }
-            kinSolverReady = false;
             render();
           }});
         }
@@ -1578,7 +1797,6 @@
           items.push({ label: 'set as ground', action: () => {
             pushHistory();
             setNodeRole(nodeMembers, 'ground');
-            kinSolverReady = false;
             render();
           }});
         }
@@ -1586,7 +1804,6 @@
           items.push({ label: 'set as input', action: () => {
             pushHistory();
             setNodeRole(nodeMembers, 'input');
-            kinSolverReady = false;
             render();
           }});
         }
@@ -1594,7 +1811,21 @@
           items.push({ label: 'set as friction', action: () => {
             pushHistory();
             setNodeRole(nodeMembers, 'friction');
-            kinSolverReady = false;
+            render();
+          }});
+        }
+        if (state.origin === nearRef) {
+          items.push({ label: 'clear origin', action: () => {
+            pushHistory();
+            state.origin = null;
+            syncText();
+            render();
+          }});
+        } else {
+          items.push({ label: 'set as origin', action: () => {
+            pushHistory();
+            state.origin = nearRef;
+            syncText();
             render();
           }});
         }
@@ -1614,6 +1845,7 @@
           for (const ref in state.roles) {
             if (ref.startsWith(prefix)) delete state.roles[ref];
           }
+          if (state.origin && state.origin.startsWith(prefix)) state.origin = null;
           if (Object.keys(state.roles).length === 0) state.restConfig = null;
           kinSolverReady = false;
           syncText();
@@ -1643,6 +1875,13 @@
   // ── Escape reset ──
 
   document.addEventListener('keydown', e => {
+    if (e.code === 'Space' && !spaceDown) {
+      const tag = (e.target && e.target.tagName) || '';
+      if (tag === 'TEXTAREA' || tag === 'INPUT') return;
+      spaceDown = true;
+      e.preventDefault();
+      if (!state.drag) svg.style.cursor = 'grab';
+    }
     if (e.key === 'Escape' && state.drag && state.drag.kinematic) {
       const saved = state.drag.savedPositions;
       if (saved) {
@@ -1666,6 +1905,13 @@
     }
   });
 
+  document.addEventListener('keyup', e => {
+    if (e.code === 'Space') {
+      spaceDown = false;
+      if (!state.drag) svg.style.cursor = 'crosshair';
+    }
+  });
+
   // ── toolbar ──
 
   document.getElementById('undoBtn').addEventListener('click', () => {
@@ -1683,8 +1929,8 @@
   document.getElementById('clearBtn').addEventListener('click', () => {
     pushHistory();
     state.links = []; state.joints = []; state.currentLink = null;
-    state.nextLinkId = 0; state.roles = {};
-    state.restConfigs = [null, null, null]; state.activeRestSlot = -1; state.restConfig = null;
+    state.nextLinkId = 0; state.roles = {}; state.origin = null;
+    state.restConfig = null;
     kinSolverReady = false;
     updateRestButtons();
     syncText(); render();
@@ -1698,44 +1944,38 @@
     state.showLabels = !state.showLabels; render();
   });
 
-  for (let _i = 0; _i < 3; _i++) {
-    (function(slot) {
-      document.getElementById('saveR' + slot + 'Btn').addEventListener('click', () => {
-        if (Object.keys(state.roles).length === 0) {
-          status.textContent = 'set ground/input roles first.';
-          status.classList.add('err');
-          return;
-        }
-        pushHistory();
-        saveRestConfig(slot);
-        status.textContent = 'R' + (slot + 1) + ' saved.';
-        status.classList.remove('err');
+  document.getElementById('captureBtn').addEventListener('click', () => {
+    if (Object.keys(state.roles).length === 0) {
+      status.textContent = 'set ground/input roles first.';
+      status.classList.add('err');
+      return;
+    }
+    pushHistory();
+    saveRestConfig();
+    status.textContent = 'rest position captured.';
+    status.classList.remove('err');
+  });
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    if (!state.restConfig) {
+      status.textContent = 'no rest position captured yet.';
+      status.classList.add('err');
+      return;
+    }
+    pushHistory();
+    const rp = state.restConfig.positions;
+    state.links.forEach(link => {
+      link.order.forEach(local => {
+        const ref = refOf(link.name, local);
+        if (rp[ref]) { link.points[local].x = rp[ref].x; link.points[local].y = rp[ref].y; }
       });
-      document.getElementById('goR' + slot + 'Btn').addEventListener('click', () => {
-        if (!state.restConfigs[slot]) {
-          status.textContent = 'R' + (slot + 1) + ' is empty.';
-          status.classList.add('err');
-          return;
-        }
-        pushHistory();
-        const rp = state.restConfigs[slot].positions;
-        state.links.forEach(link => {
-          link.order.forEach(local => {
-            const ref = refOf(link.name, local);
-            if (rp[ref]) { link.points[local].x = rp[ref].x; link.points[local].y = rp[ref].y; }
-          });
-        });
-        state.activeRestSlot = slot;
-        state.restConfig = state.restConfigs[slot];
-        kinSolverReady = false;
-        updateRestButtons();
-        syncText();
-        status.textContent = 'R' + (slot + 1) + ' restored.';
-        status.classList.remove('err');
-        render();
-      });
-    })(_i);
-  }
+    });
+    kinSolverReady = false;
+    updateRestButtons();
+    syncText();
+    status.textContent = 'reset to rest position.';
+    status.classList.remove('err');
+    render();
+  });
 
   const SNAP_SIZES = [20, 10, 0];
   let snapIdx = 0;
@@ -1752,24 +1992,68 @@
     }
   });
 
-  const ptSlider = document.getElementById('ptSizeSlider');
-  const ptVal = document.getElementById('ptSizeVal');
-  ptSlider.addEventListener('input', e => {
-    state.pointLabelSize = +e.target.value;
-    ptVal.textContent = e.target.value;
-    render();
-  });
-  const linkSlider = document.getElementById('linkSizeSlider');
-  const linkVal = document.getElementById('linkSizeVal');
-  linkSlider.addEventListener('input', e => {
-    state.linkLabelSize = +e.target.value;
-    linkVal.textContent = e.target.value;
+  const labelSlider = document.getElementById('labelSizeSlider');
+  const labelVal = document.getElementById('labelSizeVal');
+  labelSlider.addEventListener('input', e => {
+    state.labelSize = +e.target.value;
+    labelVal.textContent = e.target.value;
     render();
   });
 
   // ── sidebar buttons ──
 
   document.getElementById('applyBtn').addEventListener('click', applyText);
+
+  document.getElementById('quantizeBtn').addEventListener('click', () => {
+    if (state.links.length === 0) return;
+    pushHistory();
+    const originPos = state.origin ? getPoint(state.origin) : null;
+    const ox = originPos ? originPos.x : 0;
+    const oy = originPos ? originPos.y : 0;
+    // round each point so that (p - origin) is an integer; world coords = integer + origin offset
+    const quantize = (p) => {
+      const rx = Math.round(p.x - ox) + ox;
+      const ry = Math.round(p.y - oy) + oy;
+      p.x = rx; p.y = ry;
+    };
+    state.links.forEach(l => { for (const k in l.points) quantize(l.points[k]); });
+    if (state.restConfig) {
+      for (const k in state.restConfig.positions) quantize(state.restConfig.positions[k]);
+    }
+    kinSolverReady = false;
+    if (Object.keys(state.roles).length > 0) saveRestConfig();
+    syncText();
+    status.textContent = 'coords rounded.';
+    status.classList.remove('err');
+    render();
+  });
+
+  document.getElementById('fitBtn').addEventListener('click', () => {
+    if (state.links.length === 0) {
+      state.view = { x: 0, y: 0, w: VB_W, h: VB_H };
+      render();
+      return;
+    }
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    state.links.forEach(l => {
+      for (const local in l.points) {
+        const p = l.points[local];
+        if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+      }
+    });
+    if (!isFinite(minX)) { state.view = { x: 0, y: 0, w: VB_W, h: VB_H }; render(); return; }
+    const pad = 80;
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    const cw = Math.max(maxX - minX + pad * 2, 300);
+    const ch = Math.max(maxY - minY + pad * 2, 300);
+    const rect = svg.getBoundingClientRect();
+    const aspect = rect.width / rect.height || (VB_W / VB_H);
+    let w = cw, h = ch;
+    if (w / h < aspect) w = h * aspect; else h = w / aspect;
+    state.view = { x: cx - w / 2, y: cy - h / 2, w, h };
+    render();
+  });
 
   document.getElementById('copyBtn').addEventListener('click', () => {
     syncText();
@@ -1804,6 +2088,20 @@
   });
 
   window.addEventListener('resize', render);
+
+  // restore from localStorage if any
+  if (loadPersisted()) {
+    // sync UI widgets to loaded state
+    labelSlider.value = state.labelSize;
+    labelVal.textContent = state.labelSize;
+    const snapBtn = document.getElementById('snapBtn');
+    const cur = state.snap ? state.snapSize : 0;
+    snapIdx = SNAP_SIZES.indexOf(cur); if (snapIdx < 0) snapIdx = 0;
+    snapBtn.textContent = cur === 0 ? 'snap: off' : 'snap: ' + cur;
+    updateRestButtons();
+  }
+  // persist immediately on unload so last-frame changes aren't lost to debounce
+  window.addEventListener('beforeunload', persist);
 
   syncText();
   render();
