@@ -82,6 +82,8 @@
     height: 100%;
     cursor: crosshair;
     background: transparent;
+    user-select: none;
+    -webkit-user-select: none;
   }
   .side {
     display: flex;
@@ -185,18 +187,43 @@
   @media (prefers-color-scheme: dark) {
     .ctx-menu .danger:hover { background: #3a1c1c; }
   }
+  .rest-group {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius);
+    padding: 2px 5px;
+  }
+  .rest-label {
+    font-size: 10px;
+    color: var(--fg3);
+    font-family: var(--mono);
+    min-width: 14px;
+    text-align: center;
+  }
+  .rest-sep { width: 1px; height: 14px; background: var(--border); margin: 0 3px; }
 </style>
 </head>
 <body>
   <div class="canvas-col">
     <div class="canvas-wrap">
       <div class="toolbar">
-        <button class="btn" id="finishBtn">finish link</button>
         <button class="btn" id="undoBtn">undo</button>
-        <button class="btn" id="deleteBtn">delete last link</button>
         <button class="btn" id="clearBtn">clear</button>
         <button class="btn" id="gridBtn">grid</button>
+        <button class="btn" id="labelsBtn">labels</button>
         <button class="btn" id="snapBtn">snap: 20</button>
+        <span class="rest-group">
+          <span class="rest-label">R1</span>
+          <button class="btn" id="saveR0Btn">save</button><button class="btn" id="goR0Btn" disabled style="opacity:0.4">go</button>
+          <span class="rest-sep"></span>
+          <span class="rest-label">R2</span>
+          <button class="btn" id="saveR1Btn">save</button><button class="btn" id="goR1Btn" disabled style="opacity:0.4">go</button>
+          <span class="rest-sep"></span>
+          <span class="rest-label">R3</span>
+          <button class="btn" id="saveR2Btn">save</button><button class="btn" id="goR2Btn" disabled style="opacity:0.4">go</button>
+        </span>
         <span class="size-control">
           pt<input type="range" id="ptSizeSlider" min="10" max="48" value="24" step="1"/>
           <span id="ptSizeVal" style="min-width:22px; text-align:right; font-family:var(--mono)">24</span>
@@ -211,7 +238,7 @@
     </div>
     <div class="status" id="status">click to start the first link.</div>
     <div class="hint">
-      left click = add point &nbsp;·&nbsp; near existing point = joint &nbsp;·&nbsp; right click = finish link &nbsp;·&nbsp; drag finished link to move
+      click = add point &nbsp;·&nbsp; near point = joint &nbsp;·&nbsp; right click = finish / set ground·input·delete &nbsp;·&nbsp; drag input = simulate &nbsp;·&nbsp; save/go rest to pin positions
     </div>
   </div>
 
@@ -227,6 +254,7 @@
     <textarea id="defText" spellcheck="false"></textarea>
   </div>
 
+<script src="linkage-solver.js"></script>
 <script>
 (function(){
   const svg = document.getElementById('canvas');
@@ -247,10 +275,65 @@
     pointLabelSize: 24,
     linkLabelSize: 30,
     hoverInfo: null,
-    drag: null
+    drag: null,
+    roles: {},
+    restConfigs: [null, null, null],
+    activeRestSlot: -1,
+    restConfig: null,
+    showLabels: true
   };
 
   let dragEndTime = 0;
+  const history = [];
+  const HISTORY_MAX = 100;
+
+  function updateRestButtons() {
+    for (let i = 0; i < 3; i++) {
+      const goBtn = document.getElementById('goR' + i + 'Btn');
+      const saveBtn = document.getElementById('saveR' + i + 'Btn');
+      const hasData = !!state.restConfigs[i];
+      if (goBtn) { goBtn.disabled = !hasData; goBtn.style.opacity = hasData ? '1' : '0.4'; }
+      if (saveBtn) saveBtn.classList.toggle('primary', state.activeRestSlot === i);
+    }
+  }
+
+  function snapshot() {
+    const cloneLink = l => ({
+      name: l.name, color: l.color,
+      points: Object.fromEntries(Object.entries(l.points).map(([k, v]) => [k, { x: v.x, y: v.y }])),
+      order: [...l.order], nextPointId: l.nextPointId
+    });
+    const cloneRC = rc => rc ? {
+      positions: Object.fromEntries(Object.entries(rc.positions).map(([k, v]) => [k, { x: v.x, y: v.y }]))
+    } : null;
+    return {
+      links: state.links.map(cloneLink),
+      joints: state.joints.map(j => ({ a: j.a, b: j.b })),
+      roles: { ...state.roles },
+      restConfigs: state.restConfigs.map(cloneRC),
+      activeRestSlot: state.activeRestSlot,
+      currentLink: state.currentLink ? cloneLink(state.currentLink) : null,
+      nextLinkId: state.nextLinkId
+    };
+  }
+
+  function pushHistory() {
+    history.push(snapshot());
+    if (history.length > HISTORY_MAX) history.shift();
+  }
+
+  function restoreSnapshot(s) {
+    state.links = s.links;
+    state.joints = s.joints;
+    state.roles = s.roles;
+    state.restConfigs = s.restConfigs || [null, null, null];
+    state.activeRestSlot = s.activeRestSlot !== undefined ? s.activeRestSlot : -1;
+    state.restConfig = state.activeRestSlot >= 0 ? state.restConfigs[state.activeRestSlot] : null;
+    state.currentLink = s.currentLink;
+    state.nextLinkId = s.nextLinkId;
+    kinSolverReady = false;
+    updateRestButtons();
+  }
 
   const LINK_COLORS = ['#7F77DD', '#D85A30', '#1D9E75', '#EF9F27', '#378ADD', '#D4537E', '#534AB7', '#0F6E56', '#BA7517', '#185FA5'];
 
@@ -286,7 +369,7 @@
     return link.points[r.point];
   }
 
-  function svgCoords(evt) {
+  function svgCoords(evt, noSnap) {
     const rect = svg.getBoundingClientRect();
     const scale = Math.min(rect.width / VB_W, rect.height / VB_H);
     const renderedW = VB_W * scale, renderedH = VB_H * scale;
@@ -294,7 +377,7 @@
     const offsetY = (rect.height - renderedH) / 2;
     const x = (evt.clientX - rect.left - offsetX) / scale;
     const y = (evt.clientY - rect.top - offsetY) / scale;
-    if (state.snap) {
+    if (state.snap && !noSnap) {
       return {
         x: Math.round(x / state.snapSize) * state.snapSize,
         y: Math.round(y / state.snapSize) * state.snapSize
@@ -350,6 +433,21 @@
       });
     }
     return group;
+  }
+
+  // Node = a joint group treated as one logical pin.
+  // rep is the canonical member (sorted first) used for role storage.
+  function getNodeRole(members) {
+    for (const r of [...members].sort()) {
+      if (state.roles[r]) return state.roles[r];
+    }
+    return null;
+  }
+
+  function setNodeRole(members, role) {
+    members.forEach(r => delete state.roles[r]);
+    const rep = [...members].sort()[0];
+    if (role) state.roles[rep] = role;
   }
 
   function placeLabel(occupied, x, y, w, h) {
@@ -480,7 +578,7 @@
     });
 
     // link name labels
-    state.links.forEach(link => {
+    if (!state.showLabels) { /* skip */ } else state.links.forEach(link => {
       if (link.order.length < 2) return;
       const a = link.points[link.order[0]];
       const b = link.points[link.order[1]];
@@ -524,38 +622,102 @@
       for (const local of link.order) {
         const p = link.points[local];
         const ref = refOf(link.name, local);
+        const role = getNodeRole(jointGroup(ref));
 
-        const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        c.setAttribute('cx', p.x); c.setAttribute('cy', p.y);
-        c.setAttribute('r', 7);
-        c.setAttribute('fill', 'var(--bg)');
-        c.setAttribute('stroke', link.color);
-        c.setAttribute('stroke-width', '2.5');
-        svg.appendChild(c);
+        if (role === 'ground') {
+          // ground: filled circle + triangle base
+          const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          c.setAttribute('cx', p.x); c.setAttribute('cy', p.y);
+          c.setAttribute('r', 9);
+          c.setAttribute('fill', link.color);
+          c.setAttribute('stroke', 'var(--fg)');
+          c.setAttribute('stroke-width', '1.5');
+          svg.appendChild(c);
+          const tri = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          tri.setAttribute('d', 'M' + (p.x - 13) + ',' + (p.y + 16) +
+            ' L' + (p.x + 13) + ',' + (p.y + 16) +
+            ' L' + p.x + ',' + (p.y + 30) + ' Z');
+          tri.setAttribute('fill', 'none');
+          tri.setAttribute('stroke', link.color);
+          tri.setAttribute('stroke-width', '1.5');
+          svg.appendChild(tri);
+          for (let hi = -8; hi <= 8; hi += 4) {
+            const hl = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            hl.setAttribute('x1', p.x + hi); hl.setAttribute('y1', p.y + 31);
+            hl.setAttribute('x2', p.x + hi - 5); hl.setAttribute('y2', p.y + 37);
+            hl.setAttribute('stroke', link.color);
+            hl.setAttribute('stroke-width', '1');
+            svg.appendChild(hl);
+          }
+        } else if (role === 'input') {
+          // input: blue filled circle + arrow
+          const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          c.setAttribute('cx', p.x); c.setAttribute('cy', p.y);
+          c.setAttribute('r', 9);
+          c.setAttribute('fill', 'var(--info-border)');
+          c.setAttribute('stroke', 'var(--fg)');
+          c.setAttribute('stroke-width', '1.5');
+          svg.appendChild(c);
+          const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          arrow.setAttribute('d', 'M' + (p.x - 16) + ',' + (p.y - 28) +
+            ' L' + p.x + ',' + (p.y - 16) +
+            ' L' + (p.x + 16) + ',' + (p.y - 28));
+          arrow.setAttribute('fill', 'none');
+          arrow.setAttribute('stroke', 'var(--info-border)');
+          arrow.setAttribute('stroke-width', '2.5');
+          arrow.setAttribute('stroke-linecap', 'round');
+          svg.appendChild(arrow);
+        } else if (role === 'friction') {
+          // friction: dashed circle
+          const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          c.setAttribute('cx', p.x); c.setAttribute('cy', p.y);
+          c.setAttribute('r', 9);
+          c.setAttribute('fill', 'var(--bg)');
+          c.setAttribute('stroke', link.color);
+          c.setAttribute('stroke-width', '2');
+          c.setAttribute('stroke-dasharray', '4 3');
+          svg.appendChild(c);
+          const c2 = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          c2.setAttribute('cx', p.x); c2.setAttribute('cy', p.y);
+          c2.setAttribute('r', 4);
+          c2.setAttribute('fill', link.color);
+          c2.setAttribute('opacity', '0.5');
+          svg.appendChild(c2);
+        } else {
+          const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          c.setAttribute('cx', p.x); c.setAttribute('cy', p.y);
+          c.setAttribute('r', 7);
+          c.setAttribute('fill', 'var(--bg)');
+          c.setAttribute('stroke', link.color);
+          c.setAttribute('stroke-width', '2.5');
+          svg.appendChild(c);
+        }
 
-        const lw = ref.length * pointLabelSize * 0.6;
-        const lh = pointLabelSize;
-        const lpos = placeLabel(occupied, p.x, p.y, lw, lh);
+        if (state.showLabels) {
+          const lw = ref.length * pointLabelSize * 0.6;
+          const lh = pointLabelSize;
+          const lpos = placeLabel(occupied, p.x, p.y, lw, lh);
 
-        const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-        bg.setAttribute('x', lpos.x - 4);
-        bg.setAttribute('y', lpos.y - lh);
-        bg.setAttribute('width', lw + 8);
-        bg.setAttribute('height', lh + 3);
-        bg.setAttribute('rx', 3);
-        bg.setAttribute('fill', 'var(--bg)');
-        bg.setAttribute('opacity', '0.88');
-        svg.appendChild(bg);
+          const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          bg.setAttribute('x', lpos.x - 4);
+          bg.setAttribute('y', lpos.y - lh);
+          bg.setAttribute('width', lw + 8);
+          bg.setAttribute('height', lh + 3);
+          bg.setAttribute('rx', 3);
+          bg.setAttribute('fill', 'var(--bg)');
+          bg.setAttribute('opacity', '0.88');
+          svg.appendChild(bg);
 
-        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        t.setAttribute('x', lpos.x);
-        t.setAttribute('y', lpos.y - 3);
-        t.setAttribute('font-size', pointLabelSize);
-        t.setAttribute('fill', 'var(--fg)');
-        t.setAttribute('font-family', 'var(--mono)');
-        t.setAttribute('font-weight', '600');
-        t.textContent = ref;
-        svg.appendChild(t);
+          const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          t.setAttribute('x', lpos.x);
+          t.setAttribute('y', lpos.y - 3);
+          t.setAttribute('font-size', pointLabelSize);
+          t.setAttribute('fill', 'var(--fg)');
+          t.setAttribute('font-family', 'var(--mono)');
+          t.setAttribute('font-weight', '600');
+          t.textContent = ref;
+          svg.appendChild(t);
+        }
       }
     };
     state.links.forEach(drawPoints);
@@ -637,6 +799,14 @@
         lines.push('joint: ' + j.a + ' = ' + j.b);
       });
     }
+    const roleEntries = Object.entries(state.roles);
+    if (roleEntries.length > 0) {
+      lines.push('');
+      lines.push('# roles');
+      roleEntries.forEach(([ref, role]) => {
+        lines.push(role + ': ' + ref);
+      });
+    }
     return lines.join('\n');
   }
   function syncText() { text.value = serialize(); }
@@ -644,6 +814,7 @@
   function parse(src) {
     const newLinks = [];
     const newJoints = [];
+    const newRoles = {};
     const errors = [];
     let currentLink = null;
     src.split('\n').forEach((raw, idx) => {
@@ -679,9 +850,15 @@
         return;
       }
 
+      const rm = line.match(/^(ground|input|friction)\s*:\s*(\S+)\s*$/);
+      if (rm) {
+        newRoles[rm[2]] = rm[1];
+        return;
+      }
+
       errors.push('line ' + (idx + 1) + ': "' + line + '"');
     });
-    return { links: newLinks, joints: newJoints, errors };
+    return { links: newLinks, joints: newJoints, roles: newRoles, errors };
   }
 
   function applyText() {
@@ -693,13 +870,170 @@
     }
     state.links = r.links;
     state.joints = r.joints;
+    state.roles = r.roles || {};
     state.currentLink = null;
     let maxL = -1;
     state.links.forEach(l => { const m = l.name.match(/^L(\d+)$/); if (m) maxL = Math.max(maxL, +m[1]); });
     state.nextLinkId = maxL + 1;
+    if (Object.keys(state.roles).length > 0) saveRestConfig();
     status.textContent = 'loaded ' + state.links.length + ' links, ' + state.joints.length + ' joints.';
     status.classList.remove('err');
     render();
+  }
+
+  // ── kinematics (Newton-Raphson via LinkageSolver) ──
+
+  const kinSolver = new LinkageSolver();
+  let kinSolverReady = false;
+
+  function saveRestConfig(slot) {
+    if (slot === undefined) slot = state.activeRestSlot >= 0 ? state.activeRestSlot : 0;
+    // Snap joint-group members to a canonical (sorted-first rep) position before
+    // saving, so solver bodies are initialized consistently without drift baked in.
+    const canonPos = {};
+    const seenGroups = new Set();
+    state.links.forEach(link => {
+      link.order.forEach(local => {
+        const ref = refOf(link.name, local);
+        const members = jointGroup(ref);
+        const sorted = [...members].sort();
+        const key = sorted.join('|');
+        if (!seenGroups.has(key)) {
+          seenGroups.add(key);
+          const repP = getPoint(sorted[0]);
+          if (repP) sorted.forEach(r => { canonPos[r] = { x: repP.x, y: repP.y }; });
+        }
+      });
+    });
+    const positions = {};
+    state.links.forEach(link => {
+      link.order.forEach(local => {
+        const ref = refOf(link.name, local);
+        positions[ref] = canonPos[ref] || { x: link.points[local].x, y: link.points[local].y };
+      });
+    });
+    state.restConfigs[slot] = { positions };
+    state.activeRestSlot = slot;
+    state.restConfig = state.restConfigs[slot];
+    kinSolverReady = false;
+    updateRestButtons();
+  }
+
+  function initKinSolver() {
+    kinSolver.clear();
+    const rp = state.restConfig.positions;
+
+    // add bodies from REST positions (defines rigid shape — never changes)
+    state.links.forEach(link => {
+      const pts = link.order.map(local => {
+        const ref = refOf(link.name, local);
+        const p = rp[ref] || link.points[local];
+        return { name: local, x: p.x, y: p.y };
+      });
+      if (pts.length >= 2) kinSolver.addBody(link.name, pts);
+    });
+
+    // add joint constraints (topology — never changes)
+    // weight must match ground/input pins so all constraints are equally important
+    const JOINT_W = 100;
+    state.joints.forEach(j => {
+      const a = parseRef(j.a), b = parseRef(j.b);
+      if (kinSolver.bodies[a.link] && kinSolver.bodies[b.link]) {
+        kinSolver.addJoint(a.link, a.point, b.link, b.point, JOINT_W);
+      }
+    });
+
+    kinSolverReady = true;
+  }
+
+  function solveKinematics() {
+    if (!state.restConfig) return;
+    if (!kinSolverReady) initKinSolver();
+
+    // reset constraints (bodies & joints persist)
+    kinSolver.clearPins();
+    kinSolver.fixed = {};
+
+    const rp = state.restConfig.positions;
+    const GROUND_W = 100;
+    const INPUT_W  = 100;
+
+    // for each body, count effective ground anchors via joint-group propagation
+    const groundPerBody = {};
+    for (const ref in state.roles) {
+      if (state.roles[ref] !== 'ground' || !rp[ref]) continue;
+      const group = jointGroup(ref);
+      group.forEach(gr => {
+        const r = parseRef(gr);
+        if (!kinSolver.bodies[r.link]) return;
+        if (!groundPerBody[r.link]) groundPerBody[r.link] = [];
+        if (!groundPerBody[r.link].some(g => g.local === r.point)) {
+          groundPerBody[r.link].push({ local: r.point, pos: rp[ref] });
+        }
+      });
+    }
+
+    for (const bodyName in groundPerBody) {
+      const gpts = groundPerBody[bodyName];
+      if (gpts.length >= 2) {
+        // fully fixed — body stays at its rest pose (already set in initKinSolver)
+        const b = kinSolver.bodies[bodyName];
+        b.angle = 0;
+        // centroid of rest positions of body's points
+        const link = state.links.find(l => l.name === bodyName);
+        if (link) {
+          let cx = 0, cy = 0, cnt = 0;
+          link.order.forEach(local => {
+            const ref = refOf(bodyName, local);
+            if (rp[ref]) { cx += rp[ref].x; cy += rp[ref].y; cnt++; }
+          });
+          if (cnt) { b.x = cx / cnt; b.y = cy / cnt; }
+        }
+        kinSolver.setFixed(bodyName);
+      } else {
+        // 1 ground anchor — high-weight pin
+        kinSolver.addPin(bodyName, gpts[0].local, gpts[0].pos, GROUND_W);
+      }
+    }
+
+    // input pins: only pin the currently-dragged input; others float freely
+    const draggedRef = (state.drag && state.drag.kinematic && state.drag.mode === 'point')
+      ? refOf(state.links[state.drag.linkIdx].name, state.drag.localName)
+      : null;
+    for (const ref in state.roles) {
+      if (state.roles[ref] !== 'input') continue;
+      if (draggedRef && ref !== draggedRef) continue;
+      const p = getPoint(ref);
+      if (!p) continue;
+      const r = parseRef(ref);
+      if (!kinSolver.bodies[r.link] || kinSolver.fixed[r.link]) continue;
+      kinSolver.addPin(r.link, r.point, { x: p.x, y: p.y }, INPUT_W);
+    }
+
+    // friction pins: soft resistance to movement — point can move but resists it
+    const FRICTION_W = 8;
+    for (const ref in state.roles) {
+      if (state.roles[ref] !== 'friction') continue;
+      const p = getPoint(ref);
+      if (!p) continue;
+      const r = parseRef(ref);
+      if (!kinSolver.bodies[r.link] || kinSolver.fixed[r.link]) continue;
+      kinSolver.addPin(r.link, r.point, { x: p.x, y: p.y }, FRICTION_W);
+    }
+
+    kinSolver.solve(500, 1e-8);
+
+    // read back solved positions
+    state.links.forEach(link => {
+      if (kinSolver.bodies[link.name]) {
+        const worldPts = kinSolver.getWorldPoints(link.name);
+        link.order.forEach(local => {
+          if (worldPts[local]) {
+            link.points[local] = { x: worldPts[local].x, y: worldPts[local].y };
+          }
+        });
+      }
+    });
   }
 
   // ── drag helpers ──
@@ -765,7 +1099,14 @@
     if (!state.drag.moved) {
       const sdx = e.clientX - state.drag.screenX;
       const sdy = e.clientY - state.drag.screenY;
-      if (sdx * sdx + sdy * sdy > 64) state.drag.moved = true;
+      if (sdx * sdx + sdy * sdy > 64) {
+        state.drag.moved = true;
+        // snapshot BEFORE any mutation (skip for kinematic — that's preview, not edit)
+        if (!state.drag.kinematic && state.drag.preDragSnapshot) {
+          history.push(state.drag.preDragSnapshot);
+          if (history.length > HISTORY_MAX) history.shift();
+        }
+      }
     }
 
     if (state.drag.moved) {
@@ -773,7 +1114,93 @@
       const dy = pos.y - state.drag.startPos.y;
       const link = state.links[state.drag.linkIdx];
 
-      if (state.drag.mode === 'point') {
+      if (state.drag.kinematic) {
+        // kinematic mode: use unsnapped coords
+        const rawPos = svgCoords(e, true);
+        let targetPos;
+        if (state.drag.circleCenter) {
+          const cx = state.drag.circleCenter.x;
+          const cy = state.drag.circleCenter.y;
+          const r = state.drag.circleRadius;
+          const d = distance(rawPos, state.drag.circleCenter);
+          if (d > 0.001) {
+            targetPos = {
+              x: cx + (rawPos.x - cx) * r / d,
+              y: cy + (rawPos.y - cy) * r / d
+            };
+          } else {
+            targetPos = { x: link.points[state.drag.localName].x, y: link.points[state.drag.localName].y };
+          }
+        } else {
+          targetPos = { x: rawPos.x, y: rawPos.y };
+        }
+
+        // substep: interpolate input from current to target; rollback if solver diverges
+        const cur = link.points[state.drag.localName];
+        const sdx = targetPos.x - cur.x;
+        const sdy = targetPos.y - cur.y;
+        const stepDist = Math.hypot(sdx, sdy);
+        const MAX_STEP = 8; // SVG units per solver call
+        const nSteps = Math.max(1, Math.ceil(stepDist / MAX_STEP));
+        const startX = cur.x, startY = cur.y;
+        // all-or-nothing per frame: if any substep fails, restore to frame start
+        const MAX_DRIFT = 2.0;
+        let hitLimit = false;
+
+        // frame-start snapshot (positions + solver bodies)
+        const framePos = {};
+        state.links.forEach(sl => {
+          sl.order.forEach(lo => {
+            framePos[sl.name + '.' + lo] = { x: sl.points[lo].x, y: sl.points[lo].y };
+          });
+        });
+        const frameBodies = {};
+        for (const bname in kinSolver.bodies) {
+          const b = kinSolver.bodies[bname];
+          frameBodies[bname] = { x: b.x, y: b.y, angle: b.angle };
+        }
+
+        for (let s = 1; s <= nSteps; s++) {
+          const t = s / nSteps;
+          link.points[state.drag.localName] = {
+            x: startX + sdx * t,
+            y: startY + sdy * t
+          };
+          solveKinematics();
+
+          // measure physical validity: ground drift + joint separation
+          let maxDrift = 0;
+          const rps = state.restConfig.positions;
+          for (const ref in state.roles) {
+            if (state.roles[ref] !== 'ground') continue;
+            const rp = rps[ref]; const cp = getPoint(ref);
+            if (rp && cp) maxDrift = Math.max(maxDrift, Math.hypot(cp.x - rp.x, cp.y - rp.y));
+          }
+          state.joints.forEach(j => {
+            const pa = getPoint(j.a), pb = getPoint(j.b);
+            if (pa && pb) maxDrift = Math.max(maxDrift, Math.hypot(pa.x - pb.x, pa.y - pb.y));
+          });
+
+          if (maxDrift > MAX_DRIFT) {
+            // restore to FRAME START — no partial movement visible
+            state.links.forEach(sl => {
+              sl.order.forEach(lo => {
+                const sv = framePos[sl.name + '.' + lo];
+                if (sv) { sl.points[lo].x = sv.x; sl.points[lo].y = sv.y; }
+              });
+            });
+            for (const bname in frameBodies) {
+              const b = kinSolver.bodies[bname];
+              const bs = frameBodies[bname];
+              if (b) { b.x = bs.x; b.y = bs.y; b.angle = bs.angle; }
+            }
+            hitLimit = true;
+            break;
+          }
+        }
+        state.drag.snapTarget = null;
+        state.drag.hitLimit = hitLimit;
+      } else if (state.drag.mode === 'point') {
         link.points[state.drag.localName] = {
           x: state.drag.origPos.x + dx,
           y: state.drag.origPos.y + dy
@@ -826,13 +1253,21 @@
       state.hoverInfo = null;
       const what = state.drag.mode === 'point'
         ? link.name + '.' + state.drag.localName : link.name;
-      if (state.drag.snapTarget) {
+      if (state.drag.kinematic) {
+        if (state.drag.hitLimit) {
+          status.textContent = 'sim | ⚠ out of range — stopped';
+          status.classList.add('err');
+        } else {
+          status.textContent = 'sim | residual: ' + (kinSolver.lastResidual || 0).toFixed(4);
+          status.classList.remove('err');
+        }
+      } else if (state.drag.snapTarget) {
         status.textContent = 'joint \u2192 ' + state.drag.snapTarget.ref;
       } else {
         status.textContent = 'dragging ' + what + '\u2026';
       }
       status.classList.remove('err');
-      syncText();
+      if (!state.drag.kinematic) syncText();
       render();
     }
   }
@@ -841,27 +1276,42 @@
     if (!state.drag) return;
     const didMove = state.drag.moved;
     if (didMove) {
-      const link = state.links[state.drag.linkIdx];
-
-      if (state.drag.mode === 'point' && state.drag.snapTarget) {
-        const draggedRef = refOf(link.name, state.drag.localName);
-        const targetRef = state.drag.snapTarget.ref;
-        const targetPos = state.drag.snapTarget.pos;
-        link.points[state.drag.localName] = { x: targetPos.x, y: targetPos.y };
-        const group = jointGroup(draggedRef);
-        if (!group.has(targetRef)) {
-          state.joints.push({ a: draggedRef, b: targetRef });
-          status.textContent = 'joined ' + draggedRef + ' with ' + targetRef + '.';
-        } else {
-          status.textContent = 'moved ' + draggedRef + '.';
-        }
+      if (state.drag.kinematic) {
+        // keep simulated position (no auto-reset)
+        status.textContent = 'simulation paused at current position.';
       } else {
-        const what = state.drag.mode === 'point'
-          ? link.name + '.' + state.drag.localName : link.name;
-        status.textContent = 'moved ' + what + '.';
+        const link = state.links[state.drag.linkIdx];
+        if (state.drag.mode === 'point' && state.drag.snapTarget) {
+          const draggedRef = refOf(link.name, state.drag.localName);
+          const targetRef = state.drag.snapTarget.ref;
+          const targetPos = state.drag.snapTarget.pos;
+          link.points[state.drag.localName] = { x: targetPos.x, y: targetPos.y };
+          const group = jointGroup(draggedRef);
+          if (!group.has(targetRef)) {
+            const roleA = getNodeRole(group);
+            const roleB = getNodeRole(jointGroup(targetRef));
+            const exclusive = ['ground', 'input'];
+            if (roleA && roleB && roleA !== roleB && exclusive.includes(roleA) && exclusive.includes(roleB)) {
+              status.textContent = 'cannot join: conflicting roles (' + roleA + ' vs ' + roleB + ').';
+              status.classList.add('err');
+            } else {
+              state.joints.push({ a: draggedRef, b: targetRef });
+              status.textContent = 'joined ' + draggedRef + ' with ' + targetRef + '.';
+              status.classList.remove('err');
+            }
+          } else {
+            status.textContent = 'moved ' + draggedRef + '.';
+          }
+        } else {
+          const what = state.drag.mode === 'point'
+            ? link.name + '.' + state.drag.localName : link.name;
+          status.textContent = 'moved ' + what + '.';
+        }
+        syncText();
+        // non-kinematic drag = shape edit → auto-update rest config
+        if (Object.keys(state.roles).length > 0) saveRestConfig();
+        else kinSolverReady = false;
       }
-
-      syncText();
       status.classList.remove('err');
       dragEndTime = Date.now();
     }
@@ -883,21 +1333,65 @@
     // 1) near a finished link's point → point drag
     const nearRef = findNearPoint(pos, 14);
     if (nearRef) {
+      const role = getNodeRole(jointGroup(nearRef));
+      if (role === 'ground') return; // ground points can't be dragged
       const r = parseRef(nearRef);
       const linkIdx = state.links.findIndex(l => l.name === r.link);
       if (linkIdx >= 0) {
         const link = state.links[linkIdx];
         const pp = link.points[r.point];
+        const isKinematic = (role === 'input' || role === 'friction') && state.restConfig;
+
+        // for kinematic drag, find circle constraint (direct or joint-linked ground)
+        let circleCenter = null, circleRadius = 0;
+        if (isKinematic) {
+          for (const local of link.order) {
+            const lref = refOf(link.name, local);
+            if (lref === nearRef) continue;
+            const isGround = getNodeRole(jointGroup(lref)) === 'ground';
+            if (isGround && state.restConfig.positions[lref]) {
+              circleCenter = state.restConfig.positions[lref];
+              circleRadius = distance(
+                state.restConfig.positions[lref],
+                state.restConfig.positions[nearRef]
+              );
+              break;
+            }
+          }
+        }
+
+        // save positions + solver state at drag start (for Escape and range-limit rollback)
+        const savedPositions = {};
+        const savedBodies = {};
+        if (isKinematic) {
+          state.links.forEach(sl => {
+            sl.order.forEach(lo => {
+              const rf = refOf(sl.name, lo);
+              savedPositions[rf] = { x: sl.points[lo].x, y: sl.points[lo].y };
+            });
+          });
+          for (const bname in kinSolver.bodies) {
+            const b = kinSolver.bodies[bname];
+            savedBodies[bname] = { x: b.x, y: b.y, angle: b.angle };
+          }
+        }
+
         state.drag = {
           mode: 'point',
+          kinematic: isKinematic,
+          circleCenter,
+          circleRadius,
+          savedPositions,
+          savedBodies,
           linkIdx,
           localName: r.point,
           startPos: pos,
           screenX: e.clientX,
           screenY: e.clientY,
           origPos: { x: pp.x, y: pp.y },
-          jointMoves: buildJointMovesForPoint(nearRef),
-          moved: false
+          jointMoves: isKinematic ? [] : buildJointMovesForPoint(nearRef),
+          moved: false,
+          preDragSnapshot: isKinematic ? null : snapshot()
         };
         document.addEventListener('mousemove', onDragMove);
         document.addEventListener('mouseup', onDragEnd);
@@ -917,7 +1411,8 @@
         screenY: e.clientY,
         origPoints: snapshotPoints(link),
         jointMoves: buildJointMovesForLink(link),
-        moved: false
+        moved: false,
+        preDragSnapshot: snapshot()
       };
       document.addEventListener('mousemove', onDragMove);
       document.addEventListener('mouseup', onDragEnd);
@@ -947,9 +1442,11 @@
       }
       svg.style.cursor = 'crosshair';
     } else {
-      // not building: no joint preview, show grab cursor on draggable targets
+      // not building: show grab cursor on draggable targets
       state.hoverInfo = { pos, existingRef: null };
-      if (near || findNearSegment(pos) >= 0) {
+      if (near && getNodeRole(jointGroup(near)) === 'ground') {
+        svg.style.cursor = 'not-allowed';
+      } else if (near || findNearSegment(pos) >= 0) {
         svg.style.cursor = 'grab';
       } else {
         svg.style.cursor = 'crosshair';
@@ -968,6 +1465,7 @@
 
   svg.addEventListener('click', e => {
     if (Date.now() - dragEndTime < 300) return;
+    pushHistory();
     const pos = svgCoords(e);
     if (!state.currentLink) state.currentLink = newLink();
     const near = findNearPoint(pos);
@@ -984,8 +1482,16 @@
     const localName = addPointToLink(state.currentLink, pointPos);
     const newRef = refOf(state.currentLink.name, localName);
     if (joinRef) {
-      state.joints.push({ a: joinRef, b: newRef });
-      status.textContent = newRef + ' joined with ' + joinRef;
+      const roleA = getNodeRole(jointGroup(joinRef));
+      const roleB = getNodeRole(jointGroup(newRef));
+      if (roleA && roleB && roleA !== roleB) {
+        status.textContent = 'cannot join: conflicting roles (' + roleA + ' vs ' + roleB + ').';
+        status.classList.add('err');
+      } else {
+        state.joints.push({ a: joinRef, b: newRef });
+        status.textContent = newRef + ' joined with ' + joinRef;
+        status.classList.remove('err');
+      }
     } else {
       status.textContent = newRef + ' added to ' + state.currentLink.name;
     }
@@ -1049,14 +1555,67 @@
     if (targetLink) {
       e.stopPropagation();
       const items = [];
+
+      // point role options
+      if (nearRef) {
+        const nodeMembers = jointGroup(nearRef);
+        const currentRole = getNodeRole(nodeMembers);
+        if (currentRole) {
+          items.push({ label: 'set as normal', action: () => {
+            pushHistory();
+            setNodeRole(nodeMembers, null);
+            if (Object.keys(state.roles).length === 0) {
+              state.restConfigs = [null, null, null];
+              state.activeRestSlot = -1;
+              state.restConfig = null;
+              updateRestButtons();
+            }
+            kinSolverReady = false;
+            render();
+          }});
+        }
+        if (currentRole !== 'ground') {
+          items.push({ label: 'set as ground', action: () => {
+            pushHistory();
+            setNodeRole(nodeMembers, 'ground');
+            kinSolverReady = false;
+            render();
+          }});
+        }
+        if (currentRole !== 'input') {
+          items.push({ label: 'set as input', action: () => {
+            pushHistory();
+            setNodeRole(nodeMembers, 'input');
+            kinSolverReady = false;
+            render();
+          }});
+        }
+        if (currentRole !== 'friction') {
+          items.push({ label: 'set as friction', action: () => {
+            pushHistory();
+            setNodeRole(nodeMembers, 'friction');
+            kinSolverReady = false;
+            render();
+          }});
+        }
+      }
+
+      // link delete
       items.push({
         label: 'delete ' + targetLink.name,
         danger: true,
         action: () => {
+          pushHistory();
           const prefix = targetLink.name + '.';
           state.links = state.links.filter(l => l !== targetLink);
           state.joints = state.joints.filter(j =>
             !j.a.startsWith(prefix) && !j.b.startsWith(prefix));
+          // clean up roles for deleted link
+          for (const ref in state.roles) {
+            if (ref.startsWith(prefix)) delete state.roles[ref];
+          }
+          if (Object.keys(state.roles).length === 0) state.restConfig = null;
+          kinSolverReady = false;
           syncText();
           status.textContent = 'deleted ' + targetLink.name + '.';
           status.classList.remove('err');
@@ -1068,6 +1627,7 @@
   });
 
   function finishCurrentLink() {
+    if (state.currentLink) pushHistory();
     if (state.currentLink && state.currentLink.order.length >= 2) {
       state.links.push(state.currentLink);
       status.textContent = 'finished ' + state.currentLink.name + '.';
@@ -1080,41 +1640,102 @@
     render();
   }
 
-  // ── toolbar ──
+  // ── Escape reset ──
 
-  document.getElementById('finishBtn').addEventListener('click', finishCurrentLink);
-
-  document.getElementById('undoBtn').addEventListener('click', () => {
-    if (state.currentLink && state.currentLink.order.length > 0) {
-      const removedLocal = state.currentLink.order.pop();
-      const removedRef = refOf(state.currentLink.name, removedLocal);
-      delete state.currentLink.points[removedLocal];
-      state.joints = state.joints.filter(j => j.a !== removedRef && j.b !== removedRef);
-    } else if (state.links.length > 0) {
-      const removed = state.links.pop();
-      const prefix = removed.name + '.';
-      state.joints = state.joints.filter(j => !j.a.startsWith(prefix) && !j.b.startsWith(prefix));
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && state.drag && state.drag.kinematic) {
+      const saved = state.drag.savedPositions;
+      if (saved) {
+        state.links.forEach(link => {
+          link.order.forEach(local => {
+            const ref = refOf(link.name, local);
+            const sp = saved[ref];
+            if (sp) { link.points[local].x = sp.x; link.points[local].y = sp.y; }
+          });
+        });
+      }
+      state.drag = null;
+      svg.style.cursor = 'crosshair';
+      document.body.style.cursor = '';
+      document.removeEventListener('mousemove', onDragMove);
+      document.removeEventListener('mouseup', onDragEnd);
+      syncText();
+      render();
+      status.textContent = 'reset to initial position.';
+      status.classList.remove('err');
     }
-    syncText(); render();
   });
 
-  document.getElementById('deleteBtn').addEventListener('click', () => {
-    if (state.links.length === 0) return;
-    const removed = state.links.pop();
-    const prefix = removed.name + '.';
-    state.joints = state.joints.filter(j => !j.a.startsWith(prefix) && !j.b.startsWith(prefix));
-    syncText(); render();
+  // ── toolbar ──
+
+  document.getElementById('undoBtn').addEventListener('click', () => {
+    if (history.length === 0) {
+      status.textContent = 'nothing to undo.';
+      return;
+    }
+    restoreSnapshot(history.pop());
+    syncText();
+    status.textContent = 'undone. (' + history.length + ' left)';
+    status.classList.remove('err');
+    render();
   });
 
   document.getElementById('clearBtn').addEventListener('click', () => {
+    pushHistory();
     state.links = []; state.joints = []; state.currentLink = null;
-    state.nextLinkId = 0;
+    state.nextLinkId = 0; state.roles = {};
+    state.restConfigs = [null, null, null]; state.activeRestSlot = -1; state.restConfig = null;
+    kinSolverReady = false;
+    updateRestButtons();
     syncText(); render();
   });
 
   document.getElementById('gridBtn').addEventListener('click', () => {
     state.showGrid = !state.showGrid; render();
   });
+
+  document.getElementById('labelsBtn').addEventListener('click', () => {
+    state.showLabels = !state.showLabels; render();
+  });
+
+  for (let _i = 0; _i < 3; _i++) {
+    (function(slot) {
+      document.getElementById('saveR' + slot + 'Btn').addEventListener('click', () => {
+        if (Object.keys(state.roles).length === 0) {
+          status.textContent = 'set ground/input roles first.';
+          status.classList.add('err');
+          return;
+        }
+        pushHistory();
+        saveRestConfig(slot);
+        status.textContent = 'R' + (slot + 1) + ' saved.';
+        status.classList.remove('err');
+      });
+      document.getElementById('goR' + slot + 'Btn').addEventListener('click', () => {
+        if (!state.restConfigs[slot]) {
+          status.textContent = 'R' + (slot + 1) + ' is empty.';
+          status.classList.add('err');
+          return;
+        }
+        pushHistory();
+        const rp = state.restConfigs[slot].positions;
+        state.links.forEach(link => {
+          link.order.forEach(local => {
+            const ref = refOf(link.name, local);
+            if (rp[ref]) { link.points[local].x = rp[ref].x; link.points[local].y = rp[ref].y; }
+          });
+        });
+        state.activeRestSlot = slot;
+        state.restConfig = state.restConfigs[slot];
+        kinSolverReady = false;
+        updateRestButtons();
+        syncText();
+        status.textContent = 'R' + (slot + 1) + ' restored.';
+        status.classList.remove('err');
+        render();
+      });
+    })(_i);
+  }
 
   const SNAP_SIZES = [20, 10, 0];
   let snapIdx = 0;
@@ -1151,12 +1772,14 @@
   document.getElementById('applyBtn').addEventListener('click', applyText);
 
   document.getElementById('copyBtn').addEventListener('click', () => {
+    syncText();
     navigator.clipboard.writeText(text.value).then(() => {
       status.textContent = 'copied.';
     });
   });
 
   document.getElementById('saveBtn').addEventListener('click', () => {
+    syncText();
     const blob = new Blob([text.value], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
