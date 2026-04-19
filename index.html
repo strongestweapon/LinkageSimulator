@@ -38,6 +38,7 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body {
     height: 100%;
+    height: 100dvh;
     font-family: var(--sans);
     background: var(--bg);
     color: var(--fg);
@@ -49,6 +50,7 @@
     gap: 10px;
     padding: 10px;
   }
+  .mobile-only { display: none; }
   .canvas-col {
     display: flex;
     flex-direction: column;
@@ -84,6 +86,7 @@
     background: transparent;
     user-select: none;
     -webkit-user-select: none;
+    touch-action: none;
   }
   .side {
     display: flex;
@@ -162,30 +165,51 @@
   .size-control input {
     width: 60px;
   }
-  .ctx-menu {
-    position: fixed;
+  .action-bar {
+    display: flex;
+    gap: 6px;
+    padding: 8px 10px;
     background: var(--bg);
-    border: 1px solid var(--border2);
+    border: 0.5px solid var(--border);
     border-radius: var(--radius);
-    padding: 4px 0;
-    min-width: 160px;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
-    z-index: 999;
-    font-size: 13px;
+    align-items: center;
+    flex-wrap: wrap;
+    min-height: 44px;
   }
-  .ctx-menu div {
-    padding: 6px 14px;
-    cursor: pointer;
-    color: var(--fg);
+  .action-bar .placeholder {
+    font-size: 12px;
+    color: var(--fg3);
+    font-style: italic;
   }
-  .ctx-menu div:hover {
-    background: var(--info-bg);
-    color: var(--info-fg);
+  .action-bar .btn {
+    background: #fff;
+    color: #1a1a18;
   }
-  .ctx-menu .danger { color: var(--danger); }
-  .ctx-menu .danger:hover { background: #f8e0e0; }
-  @media (prefers-color-scheme: dark) {
-    .ctx-menu .danger:hover { background: #3a1c1c; }
+  .action-bar .btn:hover {
+    background: #f1efe8;
+  }
+  .action-bar .label {
+    font-size: 11px;
+    color: var(--fg3);
+    font-family: var(--mono);
+    margin-right: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .action-bar .btn.primary,
+  .action-bar .btn.active {
+    background: #fff;
+    color: #1a1a18;
+    border-color: #1a1a18;
+    font-weight: 600;
+  }
+  .action-bar .btn.danger {
+    background: #fff;
+    color: #1a1a18;
+    border-color: #1a1a18;
+  }
+  .action-bar .btn.danger:hover {
+    background: #f1efe8;
   }
   .rest-group {
     display: flex;
@@ -202,6 +226,26 @@
     text-align: center;
     padding: 0 2px;
   }
+  @media (max-width: 820px) {
+    body {
+      grid-template-columns: 1fr;
+      padding: 6px;
+      gap: 6px;
+    }
+    .side {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: var(--bg);
+      padding: 10px;
+    }
+    .side.open { display: flex; }
+    .toolbar { font-size: 12px; }
+    .btn { padding: 7px 10px; }
+    .mobile-only { display: inline-flex; }
+    .hint { font-size: 11px; }
+  }
 </style>
 </head>
 <body>
@@ -214,6 +258,7 @@
         <button class="btn" id="labelsBtn">labels</button>
         <button class="btn" id="snapBtn">snap: 20</button>
         <button class="btn" id="fitBtn" title="Fit view to content">fit</button>
+        <button class="btn mobile-only" id="sideToggleBtn" title="Show JSON panel">JSON</button>
         <span class="rest-group">
           <span class="rest-label">rest position</span>
           <button class="btn" id="captureBtn">capture</button><button class="btn" id="resetBtn" disabled style="opacity:0.4">reset</button>
@@ -226,19 +271,21 @@
       </div>
       <svg id="canvas" viewBox="0 0 900 1100" preserveAspectRatio="xMidYMid meet"></svg>
     </div>
+    <div class="action-bar" id="actionBar"></div>
     <div class="status" id="status">click to start the first link.</div>
     <div class="hint">
-      click = add point &nbsp;·&nbsp; near point = joint &nbsp;·&nbsp; right click = finish / set role / set origin / delete &nbsp;·&nbsp; drag input = simulate &nbsp;·&nbsp; wheel = zoom &nbsp;·&nbsp; middle-drag or space+drag = pan
+      tap = add / select &nbsp;·&nbsp; drag input = simulate &nbsp;·&nbsp; wheel or pinch = zoom &nbsp;·&nbsp; 2-finger / space+drag = pan
     </div>
   </div>
 
-  <div class="side">
+  <div class="side" id="sidePanel">
     <div class="bar">
       <button class="btn primary" id="applyBtn">apply</button>
       <button class="btn" id="quantizeBtn" title="Round all coords to integers">quantize</button>
       <button class="btn" id="copyBtn">copy</button>
       <button class="btn" id="saveBtn">save</button>
       <button class="btn" id="loadBtn">load</button>
+      <button class="btn mobile-only" id="sideCloseBtn">close</button>
       <input type="file" id="fileInput" style="display:none" accept=".txt,.linkage">
     </div>
     <div class="section-label">link definition</div>
@@ -270,10 +317,12 @@
     origin: null,
     restConfig: null,
     showLabels: true,
+    selection: null,
     view: { x: 0, y: 0, w: VB_W, h: VB_H }
   };
 
   let spaceDown = false;
+  let gestureActive = false;
   function roundCoord(v) { return Math.round(v * 10) / 10; }
 
   const STORAGE_KEY = 'fingerSimulator.v1';
@@ -512,6 +561,136 @@
     }
     occupied.push({ x: x + offsets[0].dx, y: y + offsets[0].dy - h, w, h });
     return { x: x + offsets[0].dx, y: y + offsets[0].dy };
+  }
+
+  // ── selection + action bar ──
+
+  const actionBar = document.getElementById('actionBar');
+
+  function clearSelection() {
+    if (state.selection) state.selection = null;
+  }
+
+  function selectPoint(ref) {
+    state.selection = { type: 'point', ref };
+  }
+
+  function selectLink(name) {
+    state.selection = { type: 'link', name };
+  }
+
+  function renderActionBar() {
+    actionBar.innerHTML = '';
+
+    const placeholder = (txt) => {
+      const s = document.createElement('span');
+      s.className = 'placeholder';
+      s.textContent = txt;
+      actionBar.appendChild(s);
+    };
+
+    // drag in progress — keep bar space but show hint
+    if (state.drag) {
+      placeholder(state.drag.kinematic ? 'simulating…' : 'dragging…');
+      return;
+    }
+
+    const add = (label, onClick, opts) => {
+      const b = document.createElement('button');
+      b.className = 'btn';
+      if (opts && opts.primary) b.classList.add('primary');
+      if (opts && opts.danger) b.classList.add('danger');
+      if (opts && opts.active) b.classList.add('active');
+      b.textContent = label;
+      b.addEventListener('click', e => { e.stopPropagation(); onClick(); });
+      actionBar.appendChild(b);
+      return b;
+    };
+    const addLabel = (txt) => {
+      const s = document.createElement('span');
+      s.className = 'label';
+      s.textContent = txt;
+      actionBar.appendChild(s);
+    };
+
+    // drawing mode
+    if (state.currentLink) {
+      addLabel('drawing ' + state.currentLink.name);
+      const canFinish = state.currentLink.order.length >= 2;
+      const fin = add('✓ finish', () => finishCurrentLink(), { primary: canFinish });
+      if (!canFinish) { fin.disabled = true; fin.style.opacity = '0.4'; }
+      add('✗ cancel', () => cancelCurrentLink(), { danger: true });
+      return;
+    }
+
+    if (!state.selection) {
+      placeholder('tap empty space to draw · tap a point or link to select');
+      return;
+    }
+
+    if (state.selection.type === 'point') {
+      const ref = state.selection.ref;
+      // verify still exists
+      if (!getPoint(ref)) { clearSelection(); return; }
+      const members = jointGroup(ref);
+      const currentRole = getNodeRole(members);
+      addLabel(ref + (currentRole ? ' · ' + currentRole : ''));
+      const roles = ['ground', 'input', 'friction'];
+      roles.forEach(r => {
+        add(r, () => {
+          pushHistory();
+          setNodeRole(members, currentRole === r ? null : r);
+          if (Object.keys(state.roles).length === 0) {
+            state.restConfig = null;
+            updateRestButtons();
+          }
+          render();
+        }, { active: currentRole === r });
+      });
+      const isOrigin = state.origin === ref;
+      add(isOrigin ? 'clear origin' : 'origin', () => {
+        pushHistory();
+        state.origin = isOrigin ? null : ref;
+        syncText();
+        render();
+      }, { active: isOrigin });
+      add('done', () => { clearSelection(); render(); });
+      return;
+    }
+
+    if (state.selection.type === 'link') {
+      const name = state.selection.name;
+      const link = state.links.find(l => l.name === name);
+      if (!link) { clearSelection(); return; }
+      addLabel(name);
+      add('delete', () => {
+        pushHistory();
+        const prefix = name + '.';
+        state.links = state.links.filter(l => l !== link);
+        state.joints = state.joints.filter(j => !j.a.startsWith(prefix) && !j.b.startsWith(prefix));
+        for (const r in state.roles) if (r.startsWith(prefix)) delete state.roles[r];
+        if (state.origin && state.origin.startsWith(prefix)) state.origin = null;
+        if (Object.keys(state.roles).length === 0) state.restConfig = null;
+        kinSolverReady = false;
+        clearSelection();
+        syncText();
+        status.textContent = 'deleted ' + name + '.';
+        status.classList.remove('err');
+        render();
+      }, { danger: true });
+      add('done', () => { clearSelection(); render(); });
+    }
+  }
+
+  function cancelCurrentLink() {
+    if (!state.currentLink) return;
+    const prefix = state.currentLink.name + '.';
+    state.joints = state.joints.filter(j => !j.a.startsWith(prefix) && !j.b.startsWith(prefix));
+    state.currentLink = null;
+    syncText();
+    status.textContent = 'cancelled.';
+    status.classList.remove('err');
+    render();
   }
 
   // ── render ──
@@ -892,6 +1071,7 @@
     }
 
     schedulePersist();
+    renderActionBar();
   }
 
   // ── serialize / parse ──
@@ -1014,6 +1194,7 @@
     state.roles = r.roles || {};
     state.origin = r.origin || null;
     state.currentLink = null;
+    clearSelection();
     let maxL = -1;
     state.links.forEach(l => { const m = l.name.match(/^L(\d+)$/); if (m) maxL = Math.max(maxL, +m[1]); });
     state.nextLinkId = maxL + 1;
@@ -1488,8 +1669,9 @@
     state.drag = null;
     svg.style.cursor = 'crosshair';
     document.body.style.cursor = '';
-    document.removeEventListener('mousemove', onDragMove);
-    document.removeEventListener('mouseup', onDragEnd);
+    document.removeEventListener('pointermove', onDragMove);
+    document.removeEventListener('pointerup', onDragEnd);
+    document.removeEventListener('pointercancel', onDragEnd);
     if (didMove) render();
   }
 
@@ -1510,13 +1692,15 @@
       render();
     };
     const onUp = () => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      document.removeEventListener('pointercancel', onUp);
       svg.style.cursor = spaceDown ? 'grab' : 'crosshair';
       document.body.style.cursor = '';
     };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel', onUp);
   }
 
   svg.addEventListener('wheel', e => {
@@ -1538,13 +1722,18 @@
     render();
   }, { passive: false });
 
-  svg.addEventListener('mousedown', e => {
-    if (e.button === 1 || (e.button === 0 && spaceDown)) {
-      e.preventDefault();
-      startPan(e);
-      return;
+  svg.addEventListener('pointerdown', e => {
+    // only primary mouse button, middle, or touch/pen
+    if (e.pointerType === 'mouse') {
+      if (e.button === 1 || (e.button === 0 && spaceDown)) {
+        e.preventDefault();
+        startPan(e);
+        return;
+      }
+      if (e.button !== 0) return;
     }
-    if (e.button !== 0) return;
+    // gesture mode takes priority (handled in pointer tracker below)
+    if (gestureActive) return;
     if (state.currentLink) return;
     const pos = svgCoords(e);
 
@@ -1611,8 +1800,9 @@
           moved: false,
           preDragSnapshot: isKinematic ? null : snapshot()
         };
-        document.addEventListener('mousemove', onDragMove);
-        document.addEventListener('mouseup', onDragEnd);
+        document.addEventListener('pointermove', onDragMove);
+        document.addEventListener('pointerup', onDragEnd);
+        document.addEventListener('pointercancel', onDragEnd);
         return;
       }
     }
@@ -1632,12 +1822,15 @@
         moved: false,
         preDragSnapshot: snapshot()
       };
-      document.addEventListener('mousemove', onDragMove);
-      document.addEventListener('mouseup', onDragEnd);
+      document.addEventListener('pointermove', onDragMove);
+      document.addEventListener('pointerup', onDragEnd);
+      document.addEventListener('pointercancel', onDragEnd);
     }
   });
 
-  svg.addEventListener('mousemove', e => {
+  svg.addEventListener('pointermove', e => {
+    // touch has no hover concept; keep hover/cursor logic mouse-only
+    if (e.pointerType !== 'mouse') return;
     const pos = svgCoords(e);
     const originPos = state.origin ? getPoint(state.origin) : null;
     const dx = originPos ? (pos.x - originPos.x) : pos.x;
@@ -1678,7 +1871,8 @@
     render();
   });
 
-  svg.addEventListener('mouseleave', () => {
+  svg.addEventListener('pointerleave', e => {
+    if (e.pointerType !== 'mouse') return;
     if (state.drag) return;
     state.hoverInfo = null;
     coordDisplay.textContent = '-';
@@ -1687,9 +1881,45 @@
 
   svg.addEventListener('click', e => {
     if (Date.now() - dragEndTime < 300) return;
-    pushHistory();
     const pos = svgCoords(e);
-    if (!state.currentLink) state.currentLink = newLink();
+
+    // idle mode: tap = select (existing point or segment) or start new link on empty
+    if (!state.currentLink) {
+      const near = findNearPoint(pos, 14);
+      if (near) {
+        selectPoint(near);
+        status.textContent = 'selected ' + near + '.';
+        status.classList.remove('err');
+        render();
+        return;
+      }
+      const segIdx = findNearSegment(pos);
+      if (segIdx >= 0) {
+        selectLink(state.links[segIdx].name);
+        status.textContent = 'selected ' + state.links[segIdx].name + '.';
+        status.classList.remove('err');
+        render();
+        return;
+      }
+      // empty space — clear selection, start a new link
+      if (state.selection) {
+        clearSelection();
+        render();
+        return;
+      }
+      pushHistory();
+      state.currentLink = newLink();
+      const localName = addPointToLink(state.currentLink, pos);
+      const newRef = refOf(state.currentLink.name, localName);
+      status.textContent = newRef + ' added to ' + state.currentLink.name;
+      status.classList.remove('err');
+      syncText();
+      render();
+      return;
+    }
+
+    // drawing mode: add point, join if near another link's point
+    pushHistory();
     const near = findNearPoint(pos);
     let joinRef = null;
     if (near) {
@@ -1722,141 +1952,77 @@
     render();
   });
 
-  // ── context menu ──
+  // suppress native right-click menu on canvas (right-click is not used)
+  svg.addEventListener('contextmenu', e => e.preventDefault());
 
-  let ctxMenu = null;
-  function closeCtxMenu() {
-    if (ctxMenu) { ctxMenu.remove(); ctxMenu = null; }
-  }
-  document.addEventListener('click', closeCtxMenu);
-  document.addEventListener('contextmenu', () => closeCtxMenu());
+  // ── multi-touch gesture: pinch zoom + 2-finger pan ──
 
-  function showCtxMenu(x, y, items) {
-    closeCtxMenu();
-    const menu = document.createElement('div');
-    menu.className = 'ctx-menu';
-    menu.style.left = x + 'px';
-    menu.style.top = y + 'px';
-    items.forEach(item => {
-      const row = document.createElement('div');
-      row.textContent = item.label;
-      if (item.danger) row.classList.add('danger');
-      row.addEventListener('mousedown', e => {
-        e.stopPropagation();
-        closeCtxMenu();
-        item.action();
-      });
-      menu.appendChild(row);
-    });
-    document.body.appendChild(menu);
-    ctxMenu = menu;
+  const activePointers = new Map();
+  let pinchStart = null;
+
+  function vbFromScreen(sx, sy, rect, v) {
+    const scale = Math.min(rect.width / v.w, rect.height / v.h);
+    const offsetX = (rect.width - v.w * scale) / 2;
+    const offsetY = (rect.height - v.h * scale) / 2;
+    return {
+      x: v.x + (sx - rect.left - offsetX) / scale,
+      y: v.y + (sy - rect.top - offsetY) / scale
+    };
   }
 
-  svg.addEventListener('contextmenu', e => {
+  svg.addEventListener('pointerdown', e => {
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (activePointers.size === 2 && !gestureActive) {
+      gestureActive = true;
+      // abort any in-progress drag/pan
+      if (state.drag) onDragEnd(e);
+      const pts = [...activePointers.values()];
+      const rect = svg.getBoundingClientRect();
+      const mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+      pinchStart = {
+        rect,
+        vw: state.view.w,
+        vh: state.view.h,
+        anchorVb: vbFromScreen(mid.x, mid.y, rect, state.view),
+        dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y)
+      };
+    }
+  }, true);
+
+  svg.addEventListener('pointermove', e => {
+    if (!activePointers.has(e.pointerId)) return;
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (!gestureActive || activePointers.size < 2 || !pinchStart) return;
     e.preventDefault();
-    const pos = svgCoords(e);
+    const pts = [...activePointers.values()];
+    const currMid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+    const currDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+    const k = pinchStart.dist / currDist; // k<1 = zoom in (newW smaller)
+    const newW = Math.max(40, Math.min(40000, pinchStart.vw * k));
+    const newH = Math.max(40, Math.min(40000, pinchStart.vh * k));
+    const rect = pinchStart.rect;
+    const newScale = Math.min(rect.width / newW, rect.height / newH);
+    const newOffsetX = (rect.width - newW * newScale) / 2;
+    const newOffsetY = (rect.height - newH * newScale) / 2;
+    state.view.w = newW;
+    state.view.h = newH;
+    state.view.x = pinchStart.anchorVb.x - (currMid.x - rect.left - newOffsetX) / newScale;
+    state.view.y = pinchStart.anchorVb.y - (currMid.y - rect.top - newOffsetY) / newScale;
+    render();
+  }, true);
 
-    // if building a link, right click = finish
-    if (state.currentLink) {
-      finishCurrentLink();
-      return;
+  function endGesturePointer(e) {
+    if (!activePointers.has(e.pointerId)) return;
+    activePointers.delete(e.pointerId);
+    if (gestureActive && activePointers.size < 2) {
+      gestureActive = false;
+      pinchStart = null;
+      // suppress the synthetic click that may fire after pointers lift
+      dragEndTime = Date.now();
     }
-
-    // check if right-clicked on a finished link
-    const nearRef = findNearPoint(pos, 14);
-    let targetLink = null;
-    if (nearRef) {
-      const name = parseRef(nearRef).link;
-      targetLink = state.links.find(l => l.name === name);
-    }
-    if (!targetLink) {
-      const segIdx = findNearSegment(pos);
-      if (segIdx >= 0) targetLink = state.links[segIdx];
-    }
-
-    if (targetLink) {
-      e.stopPropagation();
-      const items = [];
-
-      // point role options
-      if (nearRef) {
-        const nodeMembers = jointGroup(nearRef);
-        const currentRole = getNodeRole(nodeMembers);
-        if (currentRole) {
-          items.push({ label: 'set as normal', action: () => {
-            pushHistory();
-            setNodeRole(nodeMembers, null);
-            if (Object.keys(state.roles).length === 0) {
-              state.restConfig = null;
-              updateRestButtons();
-            }
-            render();
-          }});
-        }
-        if (currentRole !== 'ground') {
-          items.push({ label: 'set as ground', action: () => {
-            pushHistory();
-            setNodeRole(nodeMembers, 'ground');
-            render();
-          }});
-        }
-        if (currentRole !== 'input') {
-          items.push({ label: 'set as input', action: () => {
-            pushHistory();
-            setNodeRole(nodeMembers, 'input');
-            render();
-          }});
-        }
-        if (currentRole !== 'friction') {
-          items.push({ label: 'set as friction', action: () => {
-            pushHistory();
-            setNodeRole(nodeMembers, 'friction');
-            render();
-          }});
-        }
-        if (state.origin === nearRef) {
-          items.push({ label: 'clear origin', action: () => {
-            pushHistory();
-            state.origin = null;
-            syncText();
-            render();
-          }});
-        } else {
-          items.push({ label: 'set as origin', action: () => {
-            pushHistory();
-            state.origin = nearRef;
-            syncText();
-            render();
-          }});
-        }
-      }
-
-      // link delete
-      items.push({
-        label: 'delete ' + targetLink.name,
-        danger: true,
-        action: () => {
-          pushHistory();
-          const prefix = targetLink.name + '.';
-          state.links = state.links.filter(l => l !== targetLink);
-          state.joints = state.joints.filter(j =>
-            !j.a.startsWith(prefix) && !j.b.startsWith(prefix));
-          // clean up roles for deleted link
-          for (const ref in state.roles) {
-            if (ref.startsWith(prefix)) delete state.roles[ref];
-          }
-          if (state.origin && state.origin.startsWith(prefix)) state.origin = null;
-          if (Object.keys(state.roles).length === 0) state.restConfig = null;
-          kinSolverReady = false;
-          syncText();
-          status.textContent = 'deleted ' + targetLink.name + '.';
-          status.classList.remove('err');
-          render();
-        }
-      });
-      showCtxMenu(e.clientX, e.clientY, items);
-    }
-  });
+  }
+  svg.addEventListener('pointerup', endGesturePointer, true);
+  svg.addEventListener('pointercancel', endGesturePointer, true);
 
   function finishCurrentLink() {
     if (state.currentLink) pushHistory();
@@ -1896,8 +2062,9 @@
       state.drag = null;
       svg.style.cursor = 'crosshair';
       document.body.style.cursor = '';
-      document.removeEventListener('mousemove', onDragMove);
-      document.removeEventListener('mouseup', onDragEnd);
+      document.removeEventListener('pointermove', onDragMove);
+      document.removeEventListener('pointerup', onDragEnd);
+      document.removeEventListener('pointercancel', onDragEnd);
       syncText();
       render();
       status.textContent = 'reset to initial position.';
@@ -1920,6 +2087,7 @@
       return;
     }
     restoreSnapshot(history.pop());
+    clearSelection();
     syncText();
     status.textContent = 'undone. (' + history.length + ' left)';
     status.classList.remove('err');
@@ -1931,6 +2099,7 @@
     state.links = []; state.joints = []; state.currentLink = null;
     state.nextLinkId = 0; state.roles = {}; state.origin = null;
     state.restConfig = null;
+    clearSelection();
     kinSolverReady = false;
     updateRestButtons();
     syncText(); render();
@@ -2088,6 +2257,14 @@
   });
 
   window.addEventListener('resize', render);
+
+  const sidePanel = document.getElementById('sidePanel');
+  document.getElementById('sideToggleBtn').addEventListener('click', () => {
+    sidePanel.classList.toggle('open');
+  });
+  document.getElementById('sideCloseBtn').addEventListener('click', () => {
+    sidePanel.classList.remove('open');
+  });
 
   // restore from localStorage if any
   if (loadPersisted()) {
