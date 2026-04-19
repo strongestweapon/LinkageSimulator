@@ -554,6 +554,15 @@
 
   function distance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
+  // screen px → viewBox units (for constant-pixel hit targets across zoom)
+  function pxToView(px) {
+    const rect = svg.getBoundingClientRect();
+    const v = state.view;
+    const scale = Math.min(rect.width / v.w, rect.height / v.h) || 1;
+    return px / scale;
+  }
+  const HIT_PX = 22;
+
   function findNearPoint(pos, threshold) {
     threshold = threshold || 14;
     let best = null, bestD = threshold;
@@ -1032,11 +1041,25 @@
     });
 
     // point dots + labels
+    const selectedGroup = (state.selection && state.selection.type === 'point' && getPoint(state.selection.ref))
+      ? jointGroup(state.selection.ref) : null;
+
     const drawPoints = (link) => {
       for (const local of link.order) {
         const p = link.points[local];
         const ref = refOf(link.name, local);
         const role = getNodeRole(jointGroup(ref));
+
+        if (selectedGroup && selectedGroup.has(ref)) {
+          const halo = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+          halo.setAttribute('cx', p.x); halo.setAttribute('cy', p.y);
+          halo.setAttribute('r', px(HIT_PX));
+          halo.setAttribute('fill', 'none');
+          halo.setAttribute('stroke', 'var(--fg)');
+          halo.setAttribute('stroke-width', px(1.5));
+          halo.setAttribute('opacity', '0.45');
+          svg.appendChild(halo);
+        }
 
         if (role === 'ground') {
           // ground: filled circle + triangle base
@@ -1539,7 +1562,7 @@
     const pos = draggedLink.points[draggedLocal];
     const draggedRef = refOf(draggedLink.name, draggedLocal);
     const group = jointGroup(draggedRef);
-    let best = null, bestD = 20;
+    let best = null, bestD = pxToView(HIT_PX);
     state.links.forEach(l => {
       if (l.name === draggedLink.name) return;
       for (const local in l.points) {
@@ -1885,7 +1908,7 @@
     const pos = svgCoords(e);
 
     // 1) near a finished link's point → point drag
-    const nearRef = findNearPoint(pos, 14);
+    const nearRef = findNearPoint(pos, pxToView(HIT_PX));
     if (nearRef) {
       const role = getNodeRole(jointGroup(nearRef));
       if (role === 'ground') return; // ground points can't be dragged
@@ -1989,7 +2012,7 @@
     if (spaceDown) { svg.style.cursor = 'grab'; return; }
 
     // hover logic
-    const near = findNearPoint(pos);
+    const near = findNearPoint(pos, pxToView(HIT_PX));
     if (state.currentLink) {
       // building a link: show joint preview for other links' points
       if (near) {
@@ -2032,7 +2055,7 @@
 
     // idle mode: tap = select (existing point or segment) or start new link on empty
     if (!state.currentLink) {
-      const near = findNearPoint(pos, 14);
+      const near = findNearPoint(pos, pxToView(HIT_PX));
       if (near) {
         selectPoint(near);
         status.textContent = 'selected ' + near + '.';
@@ -2067,7 +2090,7 @@
 
     // drawing mode: add point, join if near another link's point
     pushHistory();
-    const near = findNearPoint(pos);
+    const near = findNearPoint(pos, pxToView(HIT_PX));
     let joinRef = null;
     if (near) {
       const nearLink = parseRef(near).link;
