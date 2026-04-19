@@ -208,3 +208,87 @@
 - active/primary는 색 대신 `border-color: var(--fg)` + `font-weight: 600`으로 강조.
 - `ghost` variant 추가(투명 bg + 옅은 테두리 + fg3 텍스트) — `done`/`cancel` 같은 제어 버튼에 적용.
 - **divider 엘리먼트**로 성격별 구획 분리: `[역할 그룹] | [origin] | [new link] | [done]`.
+
+## 배포
+
+### 웹 (GitHub Pages)
+- `web/` 디렉토리를 `main` 브랜치에 푸시하면 GitHub Actions 워크플로가 자동으로 Pages에 배포.
+- 공개 URL: https://strongestweapon.github.io/LinkageSimulator/
+- 빌드 도구 없음 — `index.html` + `linkage-solver.js`를 그대로 서빙.
+
+### iOS / macOS 네이티브 (Tauri 2 → TestFlight)
+
+**스택**: Tauri 2가 Rust 코드를 `libapp.a` 정적 라이브러리로 빌드 → Xcode가 Swift 래퍼와 링크해 WKWebView에 `web/`을 띄움. 웹 코드 변경 없이 iOS 네이티브 번들로 패키징됨.
+
+**번들 정보**
+- Bundle ID: `com.superless.linkagesim`
+- Product Name: `Linkage Simulator`
+- Team: SUPERLESS Inc. (`M38GX6QKSQ`)
+- 소스: `src-tauri/gen/apple/project.yml` → xcodegen이 `app.xcodeproj` 생성
+
+**배포 명령 (TestFlight용 IPA 생성)**
+
+```bash
+cd src-tauri
+cargo tauri ios build --export-method app-store-connect
+```
+
+출력: `src-tauri/gen/apple/build/arm64/Linkage Simulator.ipa` (Apple Distribution cert로 재서명됨)
+
+생성된 IPA를 **Transporter** 앱(Mac App Store)에 드래그 → Deliver → 10~30분 내 TestFlight에 빌드 등록됨.
+
+**새 빌드 업로드 시**: `tauri.conf.json`의 `version`을 올려야 함 (예: `0.1.0` → `0.1.1`). App Store Connect는 같은 버전/빌드 번호 재업로드를 거절.
+
+### 빌드 파이프라인에서 발견한 이슈
+
+#### Xcode GUI Archive만으로는 Tauri iOS 빌드 불가
+
+**증상**: Xcode에서 Product > Archive 실행 시 preBuildScript가 panic — `failed to build WebSocket client, ConnectionRefused 127.0.0.1:포트`.
+
+**원인**: `cargo tauri ios xcode-script`는 부모 프로세스인 `cargo tauri ios build`가 띄운 JSON-RPC 서버에 붙어서 CLI 옵션(export-method, profile 등)을 읽어옴. Xcode의 Archive는 그 부모 없이 스크립트만 직접 호출하므로 RPC 연결 실패.
+
+**해결**: Archive는 반드시 CLI에서 `cargo tauri ios build --export-method app-store-connect`로 실행. Tauri CLI가 RPC 부모로서 xcodebuild archive + export까지 오케스트레이션.
+
+#### Xcode preBuildScript에서 `cargo: command not found`
+
+**증상**: Archive 중 preBuildScript가 `cargo: command not found`로 실패.
+
+**원인**: Xcode가 실행하는 빌드 스크립트는 `.zshrc`를 source하지 않음. PATH에 `~/.cargo/bin`이 없어 `cargo`를 찾지 못함.
+
+**해결**: `project.yml`의 preBuildScript 첫 줄에 cargo env source 추가:
+```yaml
+preBuildScripts:
+  - script: |
+      if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
+      cargo tauri ios xcode-script -v --platform ... ${ARCHS:?}
+```
+`xcodegen`으로 `project.pbxproj` 재생성하거나 pbxproj의 `shellScript` 직접 수정.
+
+#### AppStore 1024 아이콘 alpha channel 거부
+
+**증상**: Transporter 또는 App Store Connect가 1024x1024 AppStore 아이콘의 alpha channel을 거부.
+
+**원인**: `cargo tauri icon` 기본 출력이 투명 배경 PNG.
+
+**해결**: `AppIcon-512@2x.png`만 흰 RGB 배경으로 flatten:
+```python
+from PIL import Image
+img = Image.open(path).convert('RGBA')
+bg = Image.new('RGB', img.size, (255, 255, 255))
+bg.paste(img, mask=img.split()[3])
+bg.save(path, 'PNG')
+```
+
+#### CFBundleVersion과 App Store 리스팅 버전 구분
+
+- `tauri.conf.json`의 `version` → Info.plist의 `CFBundleShortVersionString` + `CFBundleVersion` 양쪽에 동일하게 들어감.
+- App Store Connect의 "Prepare for Submission 1.0" 같은 리스팅 버전은 **스토어 심사 제출 시의 공개 버전**이라 빌드 버전과 무관. TestFlight는 빌드의 CFBundle 버전만 봄.
+- 같은 버전 재업로드 → App Store Connect 거절. 매번 버전 올려야 함.
+
+### 전제 조건 (처음 설정할 때)
+
+1. Apple Developer Program 가입 + Team ID 확보
+2. App Store Connect에서 앱 레코드 생성 (Bundle ID 사전 등록)
+3. Xcode > Settings > Accounts에 Apple ID 로그인, Automatic Signing 활성화된 상태에서 한 번 연 뒤 provisioning profile 자동 동기화
+4. `tauri.conf.json` + `project.yml`의 Bundle ID·Product Name·Team ID 일치 확인
+5. `ITSAppUsesNonExemptEncryption=false` Info.plist에 명시 (암호화 미사용 앱 → TestFlight 수출 규정 자동 통과)
