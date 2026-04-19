@@ -1,6 +1,8 @@
-# FingerSimulator
+# Linkage Simulator
 
-2D 평면 링키지 에디터 + 기구학 시뮬레이터. 로봇 손가락 메커니즘 분석용 (Nature Communications 2021 소프트 핑거 논문 기반). 단일 HTML 파일 — 빌드 도구, 외부 의존성 없음.
+**FETM** — 2D 평면 링키지 에디터 + 기구학 시뮬레이터. 로봇 손가락 메커니즘 분석용 (Nature Communications 2021 소프트 핑거 논문 기반). 단일 HTML 파일 — 빌드 도구, 외부 의존성 없음. iOS/macOS 네이티브 앱은 Tauri 2로 번들.
+
+문의: info@fetm.kr
 
 ## 기능
 
